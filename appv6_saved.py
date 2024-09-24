@@ -336,7 +336,7 @@ with gr.Blocks(css=CSS) as demo:
                     #### 3. 其他
                     * 3-1. 按下 clear 清除對話紀錄，並從步驟 1 開始。
                     * 3-2. [LLM] **openai**: [https://platform.openai.com/docs/models](https://platform.openai.com/docs/models)
-                    * 3-3. Download Link: [https://140.122.184.167:5567/sharing/WWDgQuqw4](https://140.122.184.167:5567/sharing/WWDgQuqw4)
+                    * 3-3. Download Link: [your_shared_folder](your_shared_folder)
                 """
                 )
                 
