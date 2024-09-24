@@ -60,7 +60,7 @@ This project integrates OpenAI's GPT and TTS (Text-to-Speech) functionality with
 - `chat_history`: Folder where chat history files are saved.
 
 ## Codes
-- Please see in [https://github.com/teinhonglo/voice-chatgpt/CODES.md](https://github.com/teinhonglo/voice-chatgpt/CODES.md)
+- Please see in [[https://github.com/teinhonglo/voice-chatgpt/CODES.md](https://github.com/teinhonglo/voice-chatgpt/CODES.md)
 
 ## External Links
 
