@@ -11,7 +11,7 @@
 3. `ChatTS.prompt()` is called to simplify the chatbot's response according to a CEFR level (such as A1).
 4. `TTS.synthesis()` is called to generate audio for the chatbot's response.
 5. If the number of rounds exceeds 10, the conversation ends, and the updated chat history and generated audio are returned.
-6. If the user presses the "Saved" button, `save_chat_history()` is called:
+6. If the user clicks the "Saved" button, `save_chat_history()` is called:
    - a. The chat history is saved in JSON and Excel formats.
 ```
 
@@ -29,7 +29,7 @@
 4. `ChatTS.prompt()` is called to simplify the chatbot's response according to a CEFR level (such as A1).
 5. `TTS.synthesis()` is called to generate audio for the chatbot's response.
 6. If the number of rounds exceeds 10, the conversation ends, and the updated chat history and generated audio are returned.
-7. If the user presses the "Saved" button, `save_chat_history()` is called:
+7. If the user clicks the "Saved" button, `save_chat_history()` is called:
    - a. The chat history is saved in JSON and Excel formats.
 ```
 
