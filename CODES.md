@@ -1,4 +1,39 @@
-## Code Explanation
+## **Code Flow in Text Version**
+
+### **Text Input Flow**:
+
+```
+1. User inputs text message.
+2. The `run_text_prompt()` function is called:
+   - a. `Chat.prompt()` is invoked to send the user prompt to GPT.
+   - b. The GPT model generates a response.
+   - c. The response is added to the chat history.
+3. `ChatTS.prompt()` is called to simplify the chatbot's response according to a CEFR level (such as A1).
+4. `TTS.synthesis()` is called to generate audio for the chatbot's response.
+5. If the number of rounds exceeds 10, the conversation ends, and the updated chat history and generated audio are returned.
+6. If the user presses the "Saved" button, `save_chat_history()` is called:
+   - a. The chat history is saved in JSON and Excel formats.
+```
+
+### **Audio Input Flow**:
+
+```
+1. User inputs audio message.
+2. The `run_audio_prompt()` function is called:
+   - a. The audio is transcribed into text using OpenAI's Whisper model.
+   - b. The transcribed text is extracted.
+3. The transcribed text is passed to `run_text_prompt()`:
+   - a. `Chat.prompt()` is invoked to send the transcribed prompt to GPT.
+   - b. The GPT model generates a response.
+   - c. The response is added to the chat history.
+4. `ChatTS.prompt()` is called to simplify the chatbot's response according to a CEFR level (such as A1).
+5. `TTS.synthesis()` is called to generate audio for the chatbot's response.
+6. If the number of rounds exceeds 10, the conversation ends, and the updated chat history and generated audio are returned.
+7. If the user presses the "Saved" button, `save_chat_history()` is called:
+   - a. The chat history is saved in JSON and Excel formats.
+```
+
+## Code Details
 
 ### Classes
 
