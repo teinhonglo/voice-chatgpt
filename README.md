@@ -38,20 +38,29 @@ This project integrates OpenAI's GPT and TTS (Text-to-Speech) functionality with
 
    These should be configured in `config_zhv5_1.py`.
 
+Here’s the updated section with the combined steps for **Text Input** and **Audio Input**, and the addition of **Chat History** with the example image included:
+
+---
+
 ## Usage (Web)
 
 1. **Initialization**
    - Fill in the required fields (User ID, LLM, Prompts, TTS Models, etc.).
    - Click "Setup" to initialize the chatbot and TTS systems.
+   - ![Initialization](https://github.com/teinhonglo/voice-chatgpt/blob/master/images/initialization.png)
 
-2. **Text Input**
-   - Type your message in the "Text Message" box and press Enter to send it.
-   
-3. **Audio Input**
-   - Record your message using the microphone and click "Send Audio" to submit it.
+2. **Input Methods**
+   - **Text Input**: Type your message in the "Text Message" box and press Enter to send it.
+   - **Audio Input**: Record your message using the microphone and click "Send Audio" to submit it.
+   - ![Input Methods](https://github.com/teinhonglo/voice-chatgpt/blob/master/images/input_methods.png)
+
+3. **Chat History**
+   - The chat interface will display the conversation history, including both the user's inputs and the chatbot's responses. This helps track the dialogue and maintain context throughout the interaction.
+   - ![Chat History](https://github.com/teinhonglo/voice-chatgpt/blob/master/images/chat_history.png)
 
 4. **Save Chat History**
-   - Enter a filename and click "Save" to store the chat history.
+   - Enter a filename and click "Save" to store the chat history in JSON and Excel formats.
+   - ![Save Chat History](https://github.com/teinhonglo/voice-chatgpt/blob/master/images/save_chat_history.png)
 
 ## Project Files
 
