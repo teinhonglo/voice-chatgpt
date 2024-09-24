@@ -6,8 +6,8 @@ This project integrates OpenAI's GPT and TTS (Text-to-Speech) functionality with
 
 1. **Chatbot Interaction**
    - Supports multi-turn conversations using OpenAI's GPT models.
-   - Offers text and audio input options.
-   - Provides grammar suggestions and text simplifications.
+   - Supports text and audio input options.
+   - Supports grammar suggestions and text simplifications.
 
 2. **Text-to-Speech (TTS)**
    - Choose from different TTS models and voices to synthesize responses.
