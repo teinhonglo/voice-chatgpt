@@ -79,58 +79,9 @@ class Chat:
         print(self.messages)
 
         return response_content
-
-'''
-1-2. Text Simplification
-'''
-class ChatTS:
-    def __init__(self, init_prompt: Optional[str] = None,
-                       ts_prompt: Optional[str] = None,
-                       llm: Optional[str] = "gpt-3.5-turbo"):
-        
-        self.init_prompt = init_prompt
-        self.ts_prompt = ts_prompt
-        self.messages = []
-        self.llm = llm
-
-        if self.llm in model_list:
-            # openai
-            self.api_key = OPENAI_KEY
-            self.api_base = None
-            
-        self.client = OpenAI(api_key=self.api_key)
-        
-        if self.init_prompt is not None:
-            self.messages.append({
-                "role": "system",
-                "content": init_prompt
-            })
-     
-    def prompt(self, content: Optional[str] = None,
-                     temperature: Optional[float] = 0.5) -> str:
-        #print("content", content)
-        if content is not None:
-            self.messages.append({
-                  "role": "user",
-                  "content": self.ts_prompt + "\n" + content
-            })
-         
-        response = self.client.chat.completions.create(
-              model=self.llm,
-              messages=self.messages,
-              temperature=temperature
-        )
-       
-        #response_content = response["choices"][0]["message"]["content"]
-        response_content = response.choices[0].message.content
-        
-        # remove the last response
-        self.messages = self.messages[:-1]
-
-        return response_content
     
 '''
-1-3. TTS
+1-2. TTS
 '''
 class TTS:
     def __init__(self, voice: Optional[str] = "alloy",
@@ -169,24 +120,17 @@ tts_bots = {}
 '''
 1. Init.
 '''
-def setup_prompt(chat_history, user_id, init_prompt, ts_init_prompt, ts_prompt, rubric_prompt, llm, tts_mdl, tts_spk, tts_speed):
+def setup_prompt(chat_history, user_id, init_prompt, rubric_prompt, llm, tts_mdl, tts_spk, tts_speed):
 
     chat_history = []    
 
     if init_prompt == "":
         init_prompt = INIT_PROMPT
     
-    if ts_init_prompt == "":
-        ts_init_prompt = TS_INIT_PROMPT
-    
-    if ts_prompt == "":
-        ts_prompt = TS_PROMPT
-
     if rubric_prompt != "":
         rubric_reply = rubric_prompt
     
     chat_bots[user_id]["chat"] = Chat(init_prompt=init_prompt, llm=llm, rubric_reply=rubric_reply)
-    chat_bots[user_id]["ts"] = ChatTS(init_prompt=ts_init_prompt, ts_prompt=ts_prompt, llm=llm)
     tts_bots[user_id] = TTS(voice=tts_spk, model=tts_mdl)
     
     chat = chat_bots[user_id]["chat"]
@@ -204,15 +148,12 @@ def setup_prompt(chat_history, user_id, init_prompt, ts_init_prompt, ts_prompt, 
 '''
 def run_text_prompt(message, chat_history, user_id, tts_speed):
     chat = chat_bots[user_id]["chat"]
-    chat_ts = chat_bots[user_id]["ts"]
     tts = tts_bots[user_id]
 
     if len(chat_history) <= 10:
         bot_message = chat.prompt(content=message)
-        bot_message_grade = "EMPTY"
-        bot_message_ts = chat_ts.prompt(content=bot_message)
         
-        chat_history.append((message, f"{bot_message} </br></br> {bot_message_grade} </br></br> {bot_message_ts}"))
+        chat_history.append((message, f"{bot_message}"))
 
         output_wav_path = tts.synthesis(bot_message, tts_speed)
     
@@ -245,7 +186,7 @@ def run_audio_prompt(audio, chat_history, user_id, tts_speed):
 Saved Chatbot history
 '''
 CHAT_TEMP_DIR = "chat_history"
-def save_chat_history(user_id, chat_history, saved_fname, init_prompt, ts_init_prompt, ts_prompt, rubric_prompt):
+def save_chat_history(user_id, chat_history, saved_fname, init_prompt, rubric_prompt):
     
     chat = chat_bots[user_id]["chat"]
     
@@ -258,45 +199,32 @@ def save_chat_history(user_id, chat_history, saved_fname, init_prompt, ts_init_p
         os.makedirs(chat_temp_dir)
 
     chat_history_json = {"chat_history": []}
-    chat_history_csv = {"chatbot": [], "user": [], "grammar_suggestion": [], "text_simplification": []}
-    prompt_csv = {"init_prompt": [init_prompt], "ts_init_prompt": [ts_init_prompt], "ts_prompt": [ts_prompt], "rubric_prompt": [rubric_prompt]}
+    chat_history_csv = {"chatbot": [], "user": []}
+    prompt_csv = {"init_prompt": [init_prompt], "rubric_prompt": [rubric_prompt]}
     
     for i, (user_response, chatbot_response) in enumerate(chat_history):
         
         chat_json = {   "user": user_response,
                         "chatbot": {
                             "response": "",
-                            "grammar_suggestion": "",
                             "text_simplification": "",
                         }
                     }    
-        # 第一次的回覆沒有 grammar_suggestion 和 text_simplification
         if i > 0:
             # 使用 "</br></br>" 分割字符串
             splitted = chatbot_response.split("</br></br>")
             try:
                 response = splitted[0]
-                grammar_suggestion = splitted[1]
-                ts_cleaned = splitted[2].replace('\\n', '').replace('\\"', '"')
-                text_simplification = json.loads(ts_cleaned)
             except:
                 response = chatbot_response
-                grammar_suggestion = ""
-                text_simplification = ""
         else:
             response = chatbot_response
-            grammar_suggestion = ""
-            text_simplification = ""
         
         chat_json["chatbot"]["response"] = response
-        chat_json["chatbot"]["grammar_suggestion"] = grammar_suggestion
-        chat_json["chatbot"]["text_simplification"] = text_simplification
             
         chat_history_json["chat_history"].append(chat_json)
         chat_history_csv["chatbot"].append(chat_json["chatbot"]["response"])
         chat_history_csv["user"].append(user_response)
-        chat_history_csv["grammar_suggestion"].append(chat_json["chatbot"]["grammar_suggestion"])
-        chat_history_csv["text_simplification"].append(chat_json["chatbot"]["text_simplification"])
     
     # Write chat messages to the file
     try:
@@ -355,8 +283,6 @@ with gr.Blocks(css=CSS) as demo:
             
             with gr.Row():
                 init_prompt = gr.Textbox(value=INIT_PROMPT, label="prompt (init.)")
-                ts_init_prompt = gr.Textbox(value=TS_INIT_PROMPT, label="prompt (text simplification - system)")
-                ts_prompt = gr.Textbox(value=TS_PROMPT, label="prompt (text simplification - user)")
             
             rubric_prompt = gr.Textbox(value=RUBRIC_PROMPT, label="prompt (rubric)")
             
@@ -376,10 +302,10 @@ with gr.Blocks(css=CSS) as demo:
                 save_button = gr.Button("Saved", interactive=True)
             clear = gr.ClearButton([chatbot])
     
-    setup_button.click(setup_prompt, [chatbot, user_id, init_prompt, ts_init_prompt, ts_prompt, rubric_prompt, llm, tts_mdl, tts_spk, tts_speed], [chatbot, syn_audio])
+    setup_button.click(setup_prompt, [chatbot, user_id, init_prompt, rubric_prompt, llm, tts_mdl, tts_spk, tts_speed], [chatbot, syn_audio])
     msg.submit(run_text_prompt, [msg, chatbot, user_id, tts_speed], [msg, chatbot, syn_audio])
     
     send_audio_button.click(run_audio_prompt, [audio, chatbot, user_id, tts_speed], [audio, chatbot, syn_audio])
-    save_button.click(save_chat_history, [user_id, chatbot, saved_fname, init_prompt, ts_init_prompt, ts_prompt, rubric_prompt])
+    save_button.click(save_chat_history, [user_id, chatbot, saved_fname, init_prompt, rubric_prompt])
 
 demo.queue().launch(share=True)
