@@ -53,3 +53,30 @@ node --check dual_mode/static/app.js
 ```
 
 The original Gradio experiments remain untouched, so the new implementation can be evaluated and rolled back independently.
+
+## Public HTTPS URL with Cloudflare Tunnel
+
+Install [`cloudflared`](https://developers.cloudflare.com/tunnel/downloads/), then run:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+./run_public.sh
+```
+
+The script starts the voice application locally, checks `/api/health`, and then starts a Cloudflare Quick Tunnel. Copy the random `https://...trycloudflare.com` URL printed by `cloudflared`. No Cloudflare account or inbound firewall port is required. The URL remains active only while the script is running.
+
+Quick Tunnels are intended for testing. The application has no built-in user authentication, so anyone with the URL can consume the configured OpenAI API quota. Do not share it broadly.
+
+For a stable hostname such as `voice.example.com`:
+
+1. In the Cloudflare dashboard, create a remotely-managed tunnel.
+2. Add a published application route from your hostname to `http://localhost:7860`.
+3. Copy the tunnel connector token and start the app without printing the token:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export CLOUDFLARE_TUNNEL_TOKEN="your-connector-token"
+./run_public.sh
+```
+
+For a production or shared deployment, protect the hostname with Cloudflare Access and add application-level rate limits. The HTTPS hostname also provides the secure browser context required for microphone access outside localhost.
