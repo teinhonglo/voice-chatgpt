@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>OpenAI 雙模式語音聊天</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">VOICE-IN / VOICE-OUT</p>
+          <h1>OpenAI 雙模式語音聊天</h1>
+          <p class="subtitle">用 Language A 說話，由助理用 Language B 回答。</p>
+        </div>
+        <div class="mode-switch" role="group" aria-label="語音模式">
+          <button class="mode-button active" data-mode="pipeline" type="button">
+            Pipeline
+          </button>
+          <button class="mode-button" data-mode="realtime" type="button">
+            Full Duplex
+          </button>
+        </div>
+      </header>
+
+      <section class="settings-card" aria-labelledby="settings-heading">
+        <div class="section-heading">
+          <div>
+            <p class="step-label">01 / SETTINGS</p>
+            <h2 id="settings-heading">對話設定</h2>
+          </div>
+          <span class="saved-indicator" id="saved-indicator">自動儲存</span>
+        </div>
+
+        <label class="field field-wide">
+          <span>System prompt</span>
+          <textarea id="system-prompt" rows="4">You are a helpful voice assistant. Answer accurately, naturally, and concisely.</textarea>
+        </label>
+
+        <div class="settings-grid">
+          <label class="field">
+            <span>Language A · 我說</span>
+            <select id="language-a"></select>
+          </label>
+          <div class="language-arrow" aria-hidden="true">→</div>
+          <label class="field">
+            <span>Language B · AI 回答</span>
+            <select id="language-b"></select>
+          </label>
+          <label class="field voice-field">
+            <span>Voice</span>
+            <select id="voice"></select>
+          </label>
+        </div>
+      </section>
+
+      <section class="conversation-card" aria-labelledby="conversation-heading">
+        <div class="section-heading conversation-heading">
+          <div>
+            <p class="step-label">02 / CONVERSATION</p>
+            <h2 id="conversation-heading">開始對話</h2>
+          </div>
+          <div class="connection-state" id="connection-state">
+            <span class="state-dot"></span>
+            <span id="status-text">Pipeline 待命</span>
+          </div>
+        </div>
+
+        <div class="mode-description" id="mode-description">
+          錄一段話後，依序完成語音辨識、文字回覆與語音合成。適合保留清楚的逐輪紀錄。
+        </div>
+
+        <div class="chat-log" id="chat-log" aria-live="polite">
+          <div class="empty-state" id="empty-state">
+            <span class="wave-icon">⌁</span>
+            <p>你的對話會顯示在這裡</p>
+          </div>
+        </div>
+
+        <div class="live-caption hidden" id="live-caption" aria-live="polite"></div>
+
+        <div class="controls" id="pipeline-controls">
+          <button class="primary-action" id="record-button" type="button">
+            <span class="action-icon" aria-hidden="true">●</span>
+            <span id="record-button-label">開始錄音</span>
+          </button>
+          <button class="secondary-action" id="clear-button" type="button">清除對話</button>
+        </div>
+
+        <div class="controls hidden" id="realtime-controls">
+          <button class="primary-action" id="call-button" type="button">
+            <span class="action-icon" aria-hidden="true">◉</span>
+            <span id="call-button-label">開始 Full Duplex</span>
+          </button>
+          <button class="secondary-action" id="mute-button" type="button" disabled>靜音</button>
+          <button class="secondary-action" id="clear-realtime-button" type="button">清除對話</button>
+        </div>
+
+        <audio id="remote-audio" autoplay></audio>
+        <audio id="pipeline-audio" autoplay></audio>
+      </section>
+
+      <footer>
+        <p>語音由 AI 生成。請勿在 System prompt 或對話中輸入機密資料。</p>
+      </footer>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
+
