@@ -234,6 +234,10 @@ async function uploadKnowledgeFiles() {
     return;
   }
   if (state.pc) stopRealtime();
+  if (state.recorder?.state === "recording") {
+    state.discardRecording = true;
+    state.recorder.stop();
+  }
   setRagControlsBusy(true);
   setRagStatus("正在上傳並建立索引…");
 
@@ -252,7 +256,7 @@ async function uploadKnowledgeFiles() {
     if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
 
     state.ragToken = payload.rag_token;
-    state.ragFileNames = [...new Set([...state.ragFileNames, ...payload.files])];
+    state.ragFileNames = [...state.ragFileNames, ...payload.files];
     saveKnowledgeBase();
     el.ragFiles.value = "";
     renderKnowledgeBase();
@@ -267,6 +271,10 @@ async function deleteKnowledgeBase() {
   if (!state.ragToken) return;
   if (!window.confirm("要刪除這個知識庫及其 OpenAI 檔案嗎？")) return;
   if (state.pc) stopRealtime();
+  if (state.recorder?.state === "recording") {
+    state.discardRecording = true;
+    state.recorder.stop();
+  }
   setRagControlsBusy(true);
   setRagStatus("正在刪除知識庫…");
 
@@ -331,6 +339,9 @@ function stopRecording() {
 
 async function sendPipelineTurn(blob) {
   el.recordButton.disabled = true;
+  el.ragFiles.disabled = true;
+  el.ragUploadButton.disabled = true;
+  el.ragDeleteButton.disabled = true;
   setStatus("OpenAI 正在處理…", "busy");
   const extension = blob.type.includes("mp4") ? "m4a" : "webm";
   const formData = new FormData();
@@ -362,6 +373,9 @@ async function sendPipelineTurn(blob) {
     setStatus(`處理失敗：${error.message}`, "error");
   } finally {
     el.recordButton.disabled = false;
+    el.ragFiles.disabled = false;
+    el.ragUploadButton.disabled = false;
+    el.ragDeleteButton.disabled = !state.ragToken;
   }
 }
 

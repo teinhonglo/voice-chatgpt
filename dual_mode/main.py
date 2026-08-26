@@ -135,12 +135,13 @@ def _decode_rag_token(token: str, api_key: str) -> str:
     if not token or len(token) > 2_048 or token.count(".") != 1:
         raise ValueError("Invalid knowledge base token")
     body, signature_text = token.split(".", 1)
-    expected = hmac.new(
-        _rag_token_secret(api_key), body.encode("ascii"), hashlib.sha256
-    ).digest()
     try:
+        body_bytes = body.encode("ascii")
+        expected = hmac.new(
+            _rag_token_secret(api_key), body_bytes, hashlib.sha256
+        ).digest()
         supplied = base64.urlsafe_b64decode(signature_text + "=" * (-len(signature_text) % 4))
-    except (ValueError, TypeError) as exc:
+    except (UnicodeError, ValueError, TypeError) as exc:
         raise ValueError("Invalid knowledge base token") from exc
     if not hmac.compare_digest(expected, supplied):
         raise ValueError("Invalid knowledge base token")
