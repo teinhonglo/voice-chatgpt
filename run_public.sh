@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+backend="${1:-${BACKEND:-openai}}"
+if [[ "$#" -gt 1 ]]; then
+  echo "Usage: BACKEND=openai|local ./run_public.sh [openai|local]" >&2
+  exit 2
+fi
+
+# shellcheck source=path.sh
+source "${project_dir}/path.sh" "${backend}"
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY before starting the public app}"
+
+if [[ "${BACKEND}" == "local" ]]; then
+  # shellcheck source=start_local_services.sh
+  source "${project_dir}/start_local_services.sh"
+fi
 
 if ! command -v cloudflared >/dev/null 2>&1; then
   echo "cloudflared is not installed. See https://developers.cloudflare.com/tunnel/downloads/" >&2
   exit 1
 fi
 
-python_bin="${PYTHON_BIN:-python}"
+python_bin="${PYTHON_BIN}"
 bind_host="${PUBLIC_BIND_HOST:-127.0.0.1}"
 port="${PORT:-7860}"
 origin_url="http://${bind_host}:${port}"
@@ -24,6 +38,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+cd "${project_dir}"
 "${python_bin}" -m uvicorn dual_mode.main:app \
   --host "${bind_host}" \
   --port "${port}" >"${app_log}" 2>&1 &
@@ -56,10 +71,9 @@ echo "Voice app is ready at ${origin_url}."
 
 if [[ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
   echo "Starting the configured Cloudflare named tunnel."
-  cloudflared tunnel --no-autoupdate run --token "${CLOUDFLARE_TUNNEL_TOKEN}"
+  TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN}" cloudflared tunnel --no-autoupdate run
 else
   echo "Starting a temporary Quick Tunnel. Copy the trycloudflare.com URL printed below."
   echo "The URL is public and unauthenticated. Stop it with Ctrl+C when testing is complete."
   cloudflared tunnel --url "${origin_url}"
 fi
-

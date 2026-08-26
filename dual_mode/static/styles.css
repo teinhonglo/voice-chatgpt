@@ -55,15 +55,18 @@ h2 { margin-bottom: 0; font-size: 1.2rem; letter-spacing: -0.02em; }
 .subtitle { margin-bottom: 0; color: var(--muted); }
 
 .mode-switch {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(138px, 1fr));
+  gap: 4px;
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(18, 20, 24, 0.92);
-  white-space: nowrap;
 }
 
 .mode-button {
+  display: grid;
+  gap: 2px;
   padding: 11px 16px;
   border: 0;
   border-radius: 10px;
@@ -73,9 +76,11 @@ h2 { margin-bottom: 0; font-size: 1.2rem; letter-spacing: -0.02em; }
   transition: 160ms ease;
 }
 
+.mode-button small { font-size: 0.64rem; font-weight: 700; opacity: 0.68; }
+
 .mode-button.active { color: #07120d; background: var(--accent); font-weight: 800; }
 
-.settings-card, .conversation-card {
+.settings-card, .knowledge-card, .conversation-card {
   margin-top: 16px;
   padding: 26px;
   border: 1px solid var(--line);
@@ -123,6 +128,40 @@ select:focus, textarea:focus { border-color: var(--accent-strong); box-shadow: 0
 }
 
 .language-arrow { padding-bottom: 14px; color: var(--accent); text-align: center; }
+
+.knowledge-state { color: var(--muted); font-size: 0.8rem; text-align: right; }
+.knowledge-state.ready { color: var(--accent); }
+.knowledge-state.error { color: var(--danger); }
+
+.upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.file-picker {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 48px;
+  padding: 6px 8px 6px 14px;
+  border: 1px dashed #3c424c;
+  border-radius: 12px;
+  color: #c3c7cf;
+  background: #0e1013;
+  cursor: pointer;
+}
+
+.file-picker > span { flex: 0 0 auto; margin-right: 12px; color: var(--accent); font-size: 0.82rem; font-weight: 800; }
+.file-picker input { min-width: 0; width: 100%; color: var(--muted); }
+.file-picker input::file-selector-button { display: none; }
+.file-picker:focus-within { border-color: var(--accent-strong); box-shadow: 0 0 0 3px rgba(111, 240, 176, 0.1); }
+.upload-action { min-width: 180px; }
+
+.knowledge-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.file-chip { max-width: 100%; padding: 7px 10px; overflow: hidden; border: 1px solid rgba(111, 240, 176, 0.2); border-radius: 999px; color: #c8fbe1; background: rgba(111, 240, 176, 0.06); font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
+.field-help { margin: 14px 0 0; color: var(--muted); font-size: 0.78rem; line-height: 1.55; }
 
 .connection-state { display: inline-flex; align-items: center; gap: 8px; }
 .state-dot { width: 8px; height: 8px; border-radius: 50%; background: #646b76; box-shadow: 0 0 0 4px rgba(100, 107, 118, 0.1); }
@@ -190,14 +229,16 @@ footer p { margin-bottom: 0; }
 @media (max-width: 800px) {
   .app-shell { width: min(100% - 20px, 680px); padding-top: 28px; }
   .hero { align-items: stretch; flex-direction: column; gap: 20px; }
-  .mode-switch { display: flex; }
-  .mode-button { flex: 1; }
+  .mode-switch { width: 100%; }
   .settings-grid { grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr); }
   .voice-field { grid-column: 1 / -1; }
+  .upload-row { grid-template-columns: 1fr 1fr; }
+  .file-picker { grid-column: 1 / -1; }
+  .upload-action { min-width: 0; }
 }
 
 @media (max-width: 560px) {
-  .settings-card, .conversation-card { padding: 18px; border-radius: 16px; }
+  .settings-card, .knowledge-card, .conversation-card { padding: 18px; border-radius: 16px; }
   .settings-grid { grid-template-columns: 1fr; }
   .language-arrow { display: none; }
   .voice-field { grid-column: auto; }
@@ -205,9 +246,10 @@ footer p { margin-bottom: 0; }
   .controls { align-items: stretch; flex-direction: column; }
   .primary-action { min-width: 0; }
   .message { max-width: 90%; }
+  .upload-row { grid-template-columns: 1fr; }
+  .file-picker { grid-column: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
-

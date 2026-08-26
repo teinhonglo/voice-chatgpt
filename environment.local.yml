@@ -1,0 +1,8 @@
+name: voice-chatgpt-local
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip>=24
+  - pip:
+      - -r requirements.dual_mode.txt
