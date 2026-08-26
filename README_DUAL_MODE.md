@@ -19,7 +19,7 @@ The OpenAI API key never goes to the browser.
 
 ## Install the Conda environments
 
-Miniconda or Anaconda is required. Python 3.11 and all Python packages are declared in `environment.openai.yml` and `environment.local.yml`.
+Miniconda or Anaconda is required. Python 3.11 and all Python packages are declared in `environment.openai.yml` and `environment.local.yml`. Both specifications use `conda-forge` plus `nodefaults`, so unrelated channels configured in a user or system `.condarc` are not queried during installation.
 
 Install both environments:
 
