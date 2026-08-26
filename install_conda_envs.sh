@@ -7,15 +7,15 @@ cd "${project_dir}"
 
 case "${requested_backend}" in
   openai)
-    environment_specs=("environment.openai.yml:${OPENAI_CONDA_ENV:-voice-chatgpt-openai}")
+    environment_specs=("environment.openai.yml:voice-chatgpt-openai")
     ;;
   local)
-    environment_specs=("environment.local.yml:${LOCAL_CONDA_ENV:-voice-chatgpt-local}")
+    environment_specs=("environment.local.yml:voice-chatgpt-local")
     ;;
   all)
     environment_specs=(
-      "environment.openai.yml:${OPENAI_CONDA_ENV:-voice-chatgpt-openai}"
-      "environment.local.yml:${LOCAL_CONDA_ENV:-voice-chatgpt-local}"
+      "environment.openai.yml:voice-chatgpt-openai"
+      "environment.local.yml:voice-chatgpt-local"
     )
     ;;
   *)
