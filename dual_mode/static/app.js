@@ -25,8 +25,12 @@ const LOCAL_RAG_STORAGE_KEY = "voice-chatgpt-local-rag";
 const RAG_TOOL_NAME = "search_knowledge_base";
 
 const el = {
+  appTitle: document.querySelector("#app-title"),
+  modeSwitch: document.querySelector("#mode-switch"),
   modeButtons: [...document.querySelectorAll(".mode-button")],
   systemPrompt: document.querySelector("#system-prompt"),
+  llmModel: document.querySelector("#llm-model"),
+  modelHelp: document.querySelector("#model-help"),
   languageA: document.querySelector("#language-a"),
   languageB: document.querySelector("#language-b"),
   voice: document.querySelector("#voice"),
@@ -58,6 +62,7 @@ const el = {
 };
 
 const state = {
+  backend: "openai",
   mode: "pipeline",
   recorder: null,
   recorderStream: null,
@@ -70,6 +75,8 @@ const state = {
   muted: false,
   inputTranscript: "",
   outputTranscript: "",
+  modelCatalog: null,
+  modelSelections: { text: "", realtime: "", local: "" },
   knowledge: {
     cloud: { token: "", files: [] },
     local: { token: "", files: [] },
@@ -91,6 +98,11 @@ function activeKnowledge() {
   return state.knowledge[isLocalMode() ? "local" : "cloud"];
 }
 
+function activeModelKind() {
+  if (isLocalMode()) return "local";
+  return isRealtimeMode() ? "realtime" : "text";
+}
+
 function populateSelects() {
   for (const [code, label] of LANGUAGES) {
     el.languageA.add(new Option(`${label} · ${code}`, code));
@@ -103,10 +115,16 @@ function populateSelects() {
 }
 
 function loadSettings() {
-  const defaults = { languageA: "zh-TW", languageB: "en", voice: "marin" };
+  const defaults = {
+    languageA: "zh-TW",
+    languageB: "en",
+    voice: "marin",
+    models: { text: "", realtime: "", local: "" },
+  };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-    return { ...defaults, ...saved };
+    const savedModels = saved.models && typeof saved.models === "object" ? saved.models : {};
+    return { ...defaults, ...saved, models: { ...defaults.models, ...savedModels } };
   } catch {
     return defaults;
   }
@@ -118,7 +136,118 @@ function currentSettings() {
     languageA: el.languageA.value,
     languageB: el.languageB.value,
     voice: el.voice.value,
+    models: { ...state.modelSelections },
   };
+}
+
+function localRecommendation(modelId) {
+  return state.modelCatalog?.local?.recommended?.find((item) => item.id === modelId) || null;
+}
+
+function renderModelHelp() {
+  if (!state.modelCatalog) return;
+  const kind = activeModelKind();
+  const selected = el.llmModel.value;
+  if (kind !== "local") {
+    const warning = state.modelCatalog.warnings?.find((message) => message.startsWith("OpenAI"));
+    el.modelHelp.textContent = warning
+      ? "無法自動取得 OpenAI 清單，目前使用後端預設模型。"
+      : kind === "realtime"
+        ? "已依 OPENAI_API_KEY 自動載入 Realtime 模型；變更後請重新建立 Full Duplex 連線。"
+        : "已依 OPENAI_API_KEY 自動載入可用的 Responses 文字模型。";
+    return;
+  }
+
+  const installed = new Set(state.modelCatalog.local?.installed || []);
+  const recommendation = localRecommendation(selected);
+  if (installed.has(selected)) {
+    el.modelHelp.textContent = recommendation
+      ? `已安裝 · ${recommendation.label} · ${recommendation.size} · ${recommendation.note}`
+      : "此模型已安裝在目前的 Local LLM 服務。";
+    return;
+  }
+  el.modelHelp.textContent = `尚未安裝。請先在伺服器執行：docker compose -f docker-compose.local.yml exec ollama ollama pull ${selected}`;
+}
+
+function renderModelSelect() {
+  if (!state.modelCatalog) return;
+  const kind = activeModelKind();
+  const defaults = state.modelCatalog.defaults || {};
+  el.llmModel.replaceChildren();
+
+  if (kind === "local") {
+    const installed = [...new Set(state.modelCatalog.local?.installed || [])];
+    const recommendations = state.modelCatalog.local?.recommended || [];
+    const installedGroup = document.createElement("optgroup");
+    installedGroup.label = "已安裝";
+    for (const modelId of installed) {
+      const recommendation = recommendations.find((item) => item.id === modelId);
+      installedGroup.append(new Option(
+        recommendation ? `${recommendation.label} · ${modelId}` : modelId,
+        modelId,
+      ));
+    }
+    if (installed.length) el.llmModel.append(installedGroup);
+
+    const recommendedGroup = document.createElement("optgroup");
+    recommendedGroup.label = "RTX 3090 推薦（需先下載）";
+    for (const item of recommendations) {
+      if (installed.includes(item.id)) continue;
+      recommendedGroup.append(new Option(`${item.label} · ${item.size} · ${item.note}`, item.id));
+    }
+    if (recommendedGroup.children.length) el.llmModel.append(recommendedGroup);
+  } else {
+    const models = state.modelCatalog.openai?.[kind] || [];
+    for (const modelId of models) el.llmModel.add(new Option(modelId, modelId));
+  }
+
+  const desired = state.modelSelections[kind] || defaults[kind] || "";
+  const available = [...el.llmModel.options].map((option) => option.value);
+  if (desired && !available.includes(desired)) {
+    const configuredGroup = document.createElement("optgroup");
+    configuredGroup.label = "目前設定";
+    configuredGroup.append(new Option(desired, desired));
+    el.llmModel.prepend(configuredGroup);
+  }
+  el.llmModel.value = desired || el.llmModel.options[0]?.value || "";
+  state.modelSelections[kind] = el.llmModel.value;
+  el.llmModel.disabled = !el.llmModel.value;
+  renderModelHelp();
+}
+
+async function loadModelCatalog() {
+  try {
+    const response = await fetch("/api/models", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
+    state.modelCatalog = payload;
+  } catch (error) {
+    state.modelCatalog = {
+      backend: "openai",
+      modes: ["pipeline", "realtime"],
+      defaults: { text: "gpt-5.6-luna", realtime: "gpt-realtime-2", local: "qwen3:8b" },
+      openai: { text: ["gpt-5.6-luna"], realtime: ["gpt-realtime-2"] },
+      local: { installed: [], recommended: [{ id: "qwen3:8b", label: "Qwen 3 8B", size: "5.2 GB", note: "預設" }] },
+      warnings: ["OpenAI model list could not be loaded; using the configured defaults."],
+    };
+    el.modelHelp.textContent = `模型清單載入失敗：${error.message}`;
+  }
+  applyDeploymentBackend(state.modelCatalog.backend, state.modelCatalog.modes);
+  renderModelSelect();
+}
+
+function applyDeploymentBackend(backend, modes) {
+  state.backend = backend === "local" ? "local" : "openai";
+  const allowedModes = new Set(Array.isArray(modes) && modes.length
+    ? modes
+    : state.backend === "local" ? ["local-pipeline", "local-realtime"] : ["pipeline", "realtime"]);
+  for (const button of el.modeButtons) {
+    button.classList.toggle("hidden", !allowedModes.has(button.dataset.mode));
+  }
+  el.modeSwitch.classList.remove("hidden");
+  el.appTitle.textContent = state.backend === "local" ? "Local LLM + RAG 語音聊天" : "OpenAI 語音聊天";
+  document.title = state.backend === "local" ? "Local LLM + RAG 語音聊天" : "OpenAI 語音聊天";
+  void setMode(state.backend === "local" ? "local-pipeline" : "pipeline", true);
 }
 
 function loadKnowledgeBase() {
@@ -233,6 +362,7 @@ function appendSettings(formData) {
   formData.append("language_a", settings.languageA);
   formData.append("language_b", settings.languageB);
   formData.append("voice", settings.voice);
+  if (el.llmModel.value) formData.append("llm_model", el.llmModel.value);
   const knowledge = activeKnowledge();
   if (knowledge.token) formData.append("rag_token", knowledge.token);
 }
@@ -242,8 +372,9 @@ function errorDetail(payload, fallback) {
   return fallback;
 }
 
-async function setMode(mode) {
-  if (mode === state.mode) return;
+async function setMode(mode, force = false) {
+  if (state.modelCatalog?.modes?.length && !state.modelCatalog.modes.includes(mode)) return;
+  if (mode === state.mode && !force) return;
   if (state.pc) stopRealtime();
   stopLocalTurn();
   if (state.recorder && state.recorder.state === "recording") {
@@ -269,6 +400,7 @@ async function setMode(mode) {
   el.privacyNote.textContent = local
     ? "語音由 AI 生成。檔案、RAG、embedding 與 LLM 留在地端；麥克風音訊會送至 OpenAI ASR，回答文字會送至 OpenAI TTS。"
     : "語音由 AI 生成。OpenAI 模式會將上傳檔案交由 OpenAI 建立檢索索引；請勿上傳未經授權的機密資料。";
+  renderModelSelect();
   renderKnowledgeBase();
   el.callButtonLabel.textContent = local ? "開始 Local Full Duplex" : "開始 Full Duplex";
   setStatus(`${local ? "Local " : ""}${realtime ? "Full Duplex" : "Pipeline"} 待命`);
@@ -753,11 +885,18 @@ function initialize() {
   el.languageA.value = settings.languageA;
   el.languageB.value = settings.languageB;
   el.voice.value = settings.voice;
+  state.modelSelections = { ...state.modelSelections, ...settings.models };
+  void loadModelCatalog();
   loadKnowledgeBase();
   renderKnowledgeBase();
 
   el.modeButtons.forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
   [el.systemPrompt, el.languageA, el.languageB, el.voice].forEach((input) => input.addEventListener("change", saveSettings));
+  el.llmModel.addEventListener("change", () => {
+    state.modelSelections[activeModelKind()] = el.llmModel.value;
+    renderModelHelp();
+    saveSettings();
+  });
   el.systemPrompt.addEventListener("input", saveSettings);
   el.recordButton.addEventListener("click", () => {
     if (state.recorder?.state === "recording") stopRecording();

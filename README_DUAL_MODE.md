@@ -1,6 +1,6 @@
 # Cloud / Local voice chat
 
-The homepage provides one-click switching between four voice modes. All modes share the same **System prompt**, **Language A** (the user speaks), **Language B** (the assistant answers), **Voice**, transcript UI, and file upload workflow.
+The project implements four voice architectures, but each launch exposes only the two modes that match `BACKEND`. `BACKEND=openai` shows OpenAI Pipeline and OpenAI Full Duplex. `BACKEND=local` shows Local Pipeline and Local Full Duplex. The two visible modes share the same **System prompt**, **Language A** (the user speaks), **Language B** (the assistant answers), **Voice**, transcript UI, and file upload workflow. The **LLM** selector changes automatically with the selected mode.
 
 | Mode | ASR | LLM + RAG | TTS | Interaction |
 |---|---|---|---|---|
@@ -56,7 +56,7 @@ BACKEND=local ./install_conda_envs.sh
 | `openai` | `voice-chatgpt-openai` | start the web server and Cloudflare Tunnel |
 | `local` | `voice-chatgpt-local` | start Ollama, Qdrant, the web server, and Cloudflare Tunnel |
 
-`BACKEND` selects the server environment and dependency bootstrap. It does not remove any of the four homepage modes.
+`BACKEND` selects the server environment, dependency bootstrap, API routes, and the two homepage modes. OpenAI launches do not show or enable Local routes; Local launches do not show or enable OpenAI LLM/RAG routes.
 
 To activate an environment manually:
 
@@ -90,9 +90,37 @@ export OPENAI_API_KEY="sk-..."
 BACKEND=local ./run.sh
 ```
 
-Use `BACKEND=local` when you want all four homepage modes available from one server launch. It starts the local dependencies, while the two OpenAI modes remain available on the same homepage. `BACKEND=openai` does not start local dependencies, so Local modes then require separately running local endpoints.
+Use `BACKEND=local` for the two Local modes. It starts the local dependencies and hides the OpenAI-only modes. Use `BACKEND=openai` for the two OpenAI modes; it neither starts nor probes local dependencies.
 
 Local startup activates `voice-chatgpt-local`, starts Ollama and Qdrant, downloads `qwen3:8b` and `bge-m3` when missing, and starts the web app. Set `SKIP_LOCAL_MODEL_PULL=1` to skip the model check. Model data and Qdrant collections use named Docker volumes, so they survive restarts. Check the three local dependencies at <http://localhost:7860/api/local/health>.
+
+## Select an LLM on the homepage
+
+The browser calls `GET /api/models` when the page opens. The backend uses the configured `OPENAI_API_KEY` with OpenAI's [List models API](https://developers.openai.com/api/reference/python/resources/models/methods/list), filters the returned identifiers into Responses text models and Realtime models, and sends only those identifiers to the browser. The API key remains on the server.
+
+The selector changes by mode:
+
+- OpenAI Pipeline lists accessible Responses text models.
+- OpenAI Full Duplex lists accessible Realtime models.
+- Both Local modes share the models reported by the local OpenAI-compatible `/v1/models` endpoint.
+
+The Local selector also recommends these popular quantized Ollama models whose published weight sizes fit comfortably within a 24 GB RTX 3090 for this application:
+
+| Model | Ollama size | Intended use |
+|---|---:|---|
+| [`qwen3:8b`](https://ollama.com/library/qwen3:8b) | 5.2 GB | default, multilingual conversation |
+| [`qwen3:14b`](https://ollama.com/library/qwen3:14b) | 9.3 GB | stronger multilingual instruction following |
+| [`llama3.1:8b`](https://ollama.com/library/llama3.1:8b) | 4.9 GB | popular general conversation |
+| [`gemma3:12b`](https://ollama.com/library/gemma3:12b) | 8.1 GB | multilingual general model |
+| [`deepseek-r1:14b`](https://ollama.com/library/deepseek-r1:14b) | 9.0 GB | reasoning model, higher latency |
+
+Only `qwen3:8b` is downloaded automatically, so normal installation remains small. Before choosing another recommended model, install it on the server. For example:
+
+```bash
+docker compose -f docker-compose.local.yml exec ollama ollama pull qwen3:14b
+```
+
+Refresh the page after the download. The model then appears under **已安裝**. Actual VRAM use also depends on context length and concurrent requests; the application does not select the 19–20 GB Qwen variants by default because their remaining VRAM margin is much smaller.
 
 For a CPU-only machine, remove the `deploy.resources.reservations.devices` block from `docker-compose.local.yml`. Generation will be much slower.
 
@@ -120,7 +148,7 @@ export MANAGE_LOCAL_SERVICES=0
 BACKEND=local ./run.sh
 ```
 
-`MANAGE_LOCAL_SERVICES=0` prevents the startup script from launching Docker or pulling Ollama models. No model names are hard-coded in application logic; `.env.example` lists every override.
+`MANAGE_LOCAL_SERVICES=0` prevents the startup script from launching Docker or pulling Ollama models. The frontend reads models reported by the configured endpoint; the RTX 3090 recommendation list is used only as a convenience. `.env.example` lists every override.
 
 ## RAG file upload
 
@@ -129,7 +157,7 @@ The knowledge card automatically targets the engine selected on the homepage:
 - an OpenAI mode uploads to an OpenAI vector store;
 - a Local mode parses and chunks files on the server, obtains embeddings from the local embedding endpoint, and stores vectors in Qdrant.
 
-The browser maintains separate signed tokens for the OpenAI and Local knowledge bases, so switching modes never sends a cloud vector-store token to Qdrant or a local token to OpenAI. The two OpenAI modes share one cloud knowledge base; the two Local modes share one local knowledge base.
+The browser maintains separate signed tokens for the OpenAI and Local knowledge bases across launches. The two OpenAI modes share one cloud knowledge base; the two Local modes share one local knowledge base. A token from one backend is never sent to the other backend.
 
 Each upload accepts up to 10 files and defaults to 20 MB per file and 50 MB per request. OpenAI RAG supports `.doc` in addition to the formats below. Local RAG supports `.docx`, `.pptx`, `.pdf`, `.txt`, `.md`, `.json`, `.html`, `.c`, `.cpp`, `.cs`, `.css`, `.go`, `.java`, `.js`, `.php`, `.py`, `.rb`, `.sh`, `.tex`, and `.ts`.
 
@@ -139,10 +167,10 @@ Local deletion removes the selected Qdrant collection. Cloud deletion removes th
 
 Important defaults are:
 
-- OpenAI text: `gpt-4.1-mini`
+- OpenAI text fallback: `gpt-5.6-luna` (the homepage normally selects from the API-provided list)
 - Pipeline transcription: `gpt-transcribe`
 - OpenAI TTS: `gpt-4o-mini-tts`
-- OpenAI Full Duplex: `gpt-realtime-2.1`
+- OpenAI Full Duplex fallback: `gpt-realtime-2` (the homepage normally selects from the API-provided list)
 - Local Full Duplex streaming ASR: `gpt-live-transcribe`
 - Local LLM: `qwen3:8b`
 - Local embedding: `bge-m3`
@@ -169,6 +197,7 @@ For a stable hostname, create a remotely managed tunnel and configure its public
 
 ## API summary
 
+- `GET /api/models`: mode-compatible OpenAI choices, installed Local models, and RTX 3090 recommendations.
 - `POST /api/pipeline/turn`: OpenAI Pipeline turn.
 - `POST /api/realtime/session`: OpenAI end-to-end Realtime WebRTC SDP exchange.
 - `POST /api/local/pipeline/turn`: OpenAI ASR/TTS with local RAG and LLM.

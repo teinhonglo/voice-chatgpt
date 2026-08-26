@@ -15,6 +15,12 @@ from dual_mode.local_service import (
     decode_local_rag_token,
     encode_local_rag_token,
 )
+from dual_mode.model_catalog import (
+    choose_default,
+    classify_openai_models,
+    preferred_first,
+    validate_model_id,
+)
 
 
 class CoreTests(unittest.TestCase):
@@ -102,6 +108,31 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(chunks[0].startswith("第一段。"))
         self.assertTrue(chunks[-1].endswith("最後一段。"))
         self.assertTrue(all(chunk.strip() for chunk in chunks))
+
+    def test_model_catalog_separates_text_and_realtime_models(self):
+        text, realtime = classify_openai_models(
+            [
+                "gpt-5.6-luna",
+                "gpt-realtime-2",
+                "gpt-4o-mini-transcribe",
+                "text-embedding-3-small",
+            ]
+        )
+
+        self.assertEqual(text, ["gpt-5.6-luna"])
+        self.assertEqual(realtime, ["gpt-realtime-2"])
+
+    def test_model_catalog_validates_and_prefers_configured_alias(self):
+        ordered = preferred_first(
+            ["gpt-5.6-luna-2026-08-01", "gpt-5.6-luna"],
+            ["gpt-5.6-luna"],
+        )
+
+        self.assertEqual(ordered[0], "gpt-5.6-luna")
+        self.assertEqual(choose_default(ordered, "gpt-5.6-luna"), "gpt-5.6-luna")
+        self.assertEqual(validate_model_id("qwen3:14b", "qwen3:8b"), "qwen3:14b")
+        with self.assertRaises(ValueError):
+            validate_model_id("../../bad model", "qwen3:8b")
 
 
 if __name__ == "__main__":

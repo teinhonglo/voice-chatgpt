@@ -328,11 +328,12 @@ def generate_local_reply(
     history: list[dict[str, str]],
     transcript: str,
     knowledge_base_id: str | None,
+    model: str = LOCAL_LLM_MODEL,
 ) -> tuple[str, list[dict[str, Any]]]:
     results = search_local_knowledge_base(knowledge_base_id, transcript) if knowledge_base_id else []
     with _llm_client() as client:
         response = client.chat.completions.create(
-            model=LOCAL_LLM_MODEL,
+            model=model,
             messages=local_chat_messages(settings, history, transcript, results),
             temperature=0.2,
         )
@@ -347,6 +348,7 @@ async def stream_local_reply(
     history: list[dict[str, str]],
     transcript: str,
     knowledge_base_id: str | None,
+    model: str = LOCAL_LLM_MODEL,
 ) -> AsyncIterator[str]:
     from openai import AsyncOpenAI
 
@@ -356,7 +358,7 @@ async def stream_local_reply(
         results = await asyncio.to_thread(search_local_knowledge_base, knowledge_base_id, transcript)
     async with AsyncOpenAI(base_url=LOCAL_LLM_BASE_URL, api_key=LOCAL_LLM_API_KEY) as client:
         stream = await client.chat.completions.create(
-            model=LOCAL_LLM_MODEL,
+            model=model,
             messages=local_chat_messages(settings, history, transcript, results),
             temperature=0.2,
             stream=True,

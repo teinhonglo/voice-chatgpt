@@ -34,6 +34,8 @@ from .core import (
 )
 from .local_service import (
     LOCAL_EMBEDDING_MODEL,
+    LOCAL_LLM_API_KEY,
+    LOCAL_LLM_BASE_URL,
     LOCAL_LLM_MODEL,
     LOCAL_RAG_EXTENSIONS,
     QDRANT_URL,
@@ -45,17 +47,25 @@ from .local_service import (
     stream_local_reply,
     upload_local_knowledge_files,
 )
+from .model_catalog import (
+    LOCAL_RECOMMENDED_MODELS,
+    choose_default,
+    classify_openai_models,
+    preferred_first,
+    validate_model_id,
+)
 
 
 LOGGER = logging.getLogger("voice-chatgpt")
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
-DEPLOYMENT_BACKEND = os.getenv("BACKEND", "openai").strip().lower() or "openai"
+_BACKEND_VALUE = os.getenv("BACKEND", "openai").strip().lower() or "openai"
+DEPLOYMENT_BACKEND = _BACKEND_VALUE if _BACKEND_VALUE in {"openai", "local"} else "openai"
 
-PIPELINE_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini")
+PIPELINE_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-5.6-luna")
 PIPELINE_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
 PIPELINE_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
-REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1")
+REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2")
 REALTIME_TRANSCRIBE_MODEL = os.getenv(
     "OPENAI_REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"
 )
@@ -96,7 +106,7 @@ RAG_MIME_TYPES = {
 }
 _VECTOR_STORE_ID_PATTERN = re.compile(r"^vs_[A-Za-z0-9_-]{6,200}$")
 
-app = FastAPI(title="Cloud and Local Voice Chat", version="1.2.0")
+app = FastAPI(title="Cloud and Local Voice Chat", version="1.3.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -117,6 +127,40 @@ def _settings(
         return validate_turn_settings(system_prompt, language_a, language_b, voice)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _model_id(value: str, default: str) -> str:
+    try:
+        return validate_model_id(value, default)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _require_backend(expected: str) -> None:
+    if DEPLOYMENT_BACKEND != expected:
+        raise HTTPException(status_code=404, detail=f"This mode is unavailable with BACKEND={DEPLOYMENT_BACKEND}")
+
+
+def _openai_models(api_key: str) -> list[Any]:
+    with OpenAI(api_key=api_key) as client:
+        return list(client.models.list().data)
+
+
+async def _installed_local_models() -> list[str]:
+    headers = {"Authorization": f"Bearer {LOCAL_LLM_API_KEY}"}
+    async with httpx.AsyncClient(timeout=5.0, headers=headers) as client:
+        response = await client.get(f"{LOCAL_LLM_BASE_URL}/models")
+        response.raise_for_status()
+    payload = response.json()
+    return sorted(
+        {
+            item["id"]
+            for item in payload.get("data", [])
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and item["id"].strip()
+        }
+    )
 
 
 def _binary_content(response: Any) -> bytes:
@@ -350,6 +394,7 @@ def _pipeline_turn(
     history: list[dict[str, str]],
     vector_store_id: str | None,
     api_key: str,
+    text_model: str,
 ) -> dict[str, str]:
     client = OpenAI(api_key=api_key)
     audio_file = BytesIO(audio_bytes)
@@ -365,7 +410,7 @@ def _pipeline_turn(
         raise RuntimeError("No speech was detected in the recording")
 
     response_options: dict[str, Any] = {
-        "model": PIPELINE_TEXT_MODEL,
+        "model": text_model,
         "instructions": build_instructions(
             settings,
             rag_enabled=bool(vector_store_id),
@@ -413,6 +458,7 @@ def _local_pipeline_turn(
     history: list[dict[str, str]],
     knowledge_base_id: str | None,
     api_key: str,
+    llm_model: str,
 ) -> dict[str, str]:
     """Use OpenAI for speech I/O and local services for retrieval and reasoning."""
 
@@ -433,6 +479,7 @@ def _local_pipeline_turn(
         history,
         transcript,
         knowledge_base_id,
+        llm_model,
     )
     speech_response = openai_client.audio.speech.create(
         model=PIPELINE_TTS_MODEL,
@@ -483,6 +530,7 @@ async def _local_duplex_events(
     transcript: str,
     knowledge_base_id: str | None,
     api_key: str,
+    llm_model: str,
 ):
     """Stream local text and ordered OpenAI TTS chunks as newline-delimited JSON."""
 
@@ -498,6 +546,7 @@ async def _local_duplex_events(
                 history,
                 transcript,
                 knowledge_base_id,
+                llm_model,
             ):
                 reply_parts.append(delta)
                 pending_speech += delta
@@ -582,7 +631,11 @@ async def health() -> dict[str, Any]:
         "backend": DEPLOYMENT_BACKEND,
         "conda_environment": os.getenv("VOICE_CHATGPT_CONDA_ENV", ""),
         "api_key_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
-        "modes": ["pipeline", "realtime", "local-pipeline", "local-realtime"],
+        "modes": (
+            ["local-pipeline", "local-realtime"]
+            if DEPLOYMENT_BACKEND == "local"
+            else ["pipeline", "realtime"]
+        ),
         "models": {
             "text": PIPELINE_TEXT_MODEL,
             "transcribe": PIPELINE_TRANSCRIBE_MODEL,
@@ -607,8 +660,81 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/models")
+async def model_catalog() -> dict[str, Any]:
+    """Return mode-compatible model choices without exposing the API key."""
+
+    api_key = _api_key()
+    warnings: list[str] = []
+    text_models: list[str] = []
+    realtime_models: list[str] = []
+    installed_local_models: list[str] = []
+
+    if DEPLOYMENT_BACKEND == "local":
+        try:
+            local_result = await _installed_local_models()
+        except Exception:
+            warnings.append("Local model server is not running; showing recommended RTX 3090 models.")
+        else:
+            for model_id in local_result:
+                try:
+                    installed_local_models.append(validate_model_id(model_id, LOCAL_LLM_MODEL))
+                except ValueError:
+                    continue
+    else:
+        try:
+            openai_result = await run_in_threadpool(_openai_models, api_key)
+        except Exception:
+            warnings.append("OpenAI model list could not be loaded; using the configured defaults.")
+            text_models = [PIPELINE_TEXT_MODEL]
+            realtime_models = [REALTIME_MODEL]
+        else:
+            text_models, realtime_models = classify_openai_models(openai_result)
+        if not text_models:
+            text_models = [PIPELINE_TEXT_MODEL]
+        if not realtime_models:
+            realtime_models = [REALTIME_MODEL]
+
+        text_models = preferred_first(
+            text_models,
+            [PIPELINE_TEXT_MODEL, "gpt-5.6-luna", "gpt-5.4-mini", "gpt-4.1-mini", "gpt-4o-mini"],
+        )
+        realtime_models = preferred_first(
+            realtime_models,
+            [REALTIME_MODEL, "gpt-realtime-2", "gpt-realtime", "gpt-realtime-mini"],
+        )
+
+    return {
+        "backend": DEPLOYMENT_BACKEND,
+        "modes": (
+            ["local-pipeline", "local-realtime"]
+            if DEPLOYMENT_BACKEND == "local"
+            else ["pipeline", "realtime"]
+        ),
+        "defaults": {
+            "text": choose_default(text_models, PIPELINE_TEXT_MODEL),
+            "realtime": choose_default(realtime_models, REALTIME_MODEL),
+            "local": (
+                LOCAL_LLM_MODEL
+                if LOCAL_LLM_MODEL in installed_local_models or not installed_local_models
+                else installed_local_models[0]
+            ),
+        },
+        "openai": {
+            "text": text_models,
+            "realtime": realtime_models,
+        },
+        "local": {
+            "installed": sorted(set(installed_local_models)),
+            "recommended": list(LOCAL_RECOMMENDED_MODELS),
+        },
+        "warnings": warnings,
+    }
+
+
 @app.get("/api/local/health")
 async def local_services_health() -> dict[str, Any]:
+    _require_backend("local")
     return await local_health()
 
 
@@ -617,6 +743,7 @@ async def rag_upload(
     files: list[UploadFile] = File(...),
     rag_token: str = Form(""),
 ) -> dict[str, Any]:
+    _require_backend("openai")
     if not files or len(files) > MAX_RAG_FILES_PER_UPLOAD:
         raise HTTPException(
             status_code=422,
@@ -683,6 +810,7 @@ async def rag_search(
     query: str = Form(...),
     rag_token: str = Form(...),
 ) -> dict[str, Any]:
+    _require_backend("openai")
     clean_query = query.strip()
     if not clean_query or len(clean_query) > 2_000:
         raise HTTPException(status_code=422, detail="Invalid knowledge base query")
@@ -705,6 +833,7 @@ async def rag_search(
 
 @app.post("/api/rag/delete", response_class=JSONResponse)
 async def rag_delete(rag_token: str = Form(...)) -> dict[str, bool]:
+    _require_backend("openai")
     api_key = _api_key()
     vector_store_id = _optional_vector_store_id(rag_token, api_key)
     if not vector_store_id:
@@ -722,6 +851,7 @@ async def local_rag_upload(
     files: list[UploadFile] = File(...),
     rag_token: str = Form(""),
 ) -> dict[str, Any]:
+    _require_backend("local")
     if not files or len(files) > MAX_RAG_FILES_PER_UPLOAD:
         raise HTTPException(
             status_code=422,
@@ -777,6 +907,7 @@ async def local_rag_upload(
 
 @app.post("/api/local/rag/delete", response_class=JSONResponse)
 async def local_rag_delete(rag_token: str = Form(...)) -> dict[str, bool]:
+    _require_backend("local")
     api_key = _api_key()
     knowledge_base_id = _optional_local_knowledge_base_id(rag_token, api_key)
     if not knowledge_base_id:
@@ -796,10 +927,13 @@ async def pipeline_turn(
     language_a: str = Form("zh-TW"),
     language_b: str = Form("en"),
     voice: str = Form("marin"),
+    llm_model: str = Form(PIPELINE_TEXT_MODEL),
     history_json: str = Form("[]"),
     rag_token: str = Form(""),
 ) -> dict[str, str]:
+    _require_backend("openai")
     settings = _settings(system_prompt, language_a, language_b, voice)
+    text_model = _model_id(llm_model, PIPELINE_TEXT_MODEL)
     api_key = _api_key()
     vector_store_id = _optional_vector_store_id(rag_token, api_key)
     try:
@@ -825,6 +959,7 @@ async def pipeline_turn(
             history,
             vector_store_id,
             api_key,
+            text_model,
         )
     except HTTPException:
         raise
@@ -840,10 +975,13 @@ async def local_pipeline_turn(
     language_a: str = Form("zh-TW"),
     language_b: str = Form("en"),
     voice: str = Form("marin"),
+    llm_model: str = Form(LOCAL_LLM_MODEL),
     history_json: str = Form("[]"),
     rag_token: str = Form(""),
 ) -> dict[str, str]:
+    _require_backend("local")
     settings = _settings(system_prompt, language_a, language_b, voice)
+    local_model = _model_id(llm_model, LOCAL_LLM_MODEL)
     api_key = _api_key()
     knowledge_base_id = _optional_local_knowledge_base_id(rag_token, api_key)
     try:
@@ -867,6 +1005,7 @@ async def local_pipeline_turn(
             history,
             knowledge_base_id,
             api_key,
+            local_model,
         )
     except Exception as exc:
         LOGGER.exception("Local pipeline turn failed")
@@ -883,17 +1022,22 @@ async def realtime_session(
     language_a: str = Form("zh-TW"),
     language_b: str = Form("en"),
     voice: str = Form("marin"),
+    llm_model: str = Form(REALTIME_MODEL),
     rag_token: str = Form(""),
 ) -> PlainTextResponse:
+    _require_backend("openai")
     if not sdp.strip() or len(sdp) > 200_000:
         raise HTTPException(status_code=400, detail="Invalid SDP offer")
 
     settings = _settings(system_prompt, language_a, language_b, voice)
+    realtime_model = _model_id(llm_model, REALTIME_MODEL)
+    if "realtime" not in realtime_model.lower():
+        raise HTTPException(status_code=422, detail="OpenAI Full Duplex requires a Realtime model")
     api_key = _api_key()
     vector_store_id = _optional_vector_store_id(rag_token, api_key)
     session = build_realtime_session(
         settings,
-        realtime_model=REALTIME_MODEL,
+        realtime_model=realtime_model,
         realtime_transcription_model=REALTIME_TRANSCRIBE_MODEL,
         rag_enabled=bool(vector_store_id),
     )
@@ -931,6 +1075,7 @@ async def local_realtime_transcription_session(
     voice: str = Form("marin"),
     rag_token: str = Form(""),
 ) -> PlainTextResponse:
+    _require_backend("local")
     if not sdp.strip() or len(sdp) > 200_000:
         raise HTTPException(status_code=400, detail="Invalid SDP offer")
     settings = _settings(system_prompt, language_a, language_b, voice)
@@ -966,13 +1111,16 @@ async def local_realtime_turn(
     language_a: str = Form("zh-TW"),
     language_b: str = Form("en"),
     voice: str = Form("marin"),
+    llm_model: str = Form(LOCAL_LLM_MODEL),
     history_json: str = Form("[]"),
     rag_token: str = Form(""),
 ) -> StreamingResponse:
+    _require_backend("local")
     clean_transcript = transcript.strip()
     if not clean_transcript or len(clean_transcript) > 8_000:
         raise HTTPException(status_code=422, detail="Invalid transcript")
     settings = _settings(system_prompt, language_a, language_b, voice)
+    local_model = _model_id(llm_model, LOCAL_LLM_MODEL)
     api_key = _api_key()
     knowledge_base_id = _optional_local_knowledge_base_id(rag_token, api_key)
     try:
@@ -986,6 +1134,7 @@ async def local_realtime_turn(
             clean_transcript,
             knowledge_base_id,
             api_key,
+            local_model,
         ),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},

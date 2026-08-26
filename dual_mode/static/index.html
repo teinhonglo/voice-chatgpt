@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <title>Cloud / Local 四模式語音聊天</title>
+    <title>語音聊天</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -12,10 +12,10 @@
       <header class="hero">
         <div>
           <p class="eyebrow">VOICE-IN / VOICE-OUT</p>
-          <h1>Cloud / Local 語音聊天</h1>
+          <h1 id="app-title">語音聊天</h1>
           <p class="subtitle">用 Language A 說話，由助理用 Language B 回答。</p>
         </div>
-        <div class="mode-switch" role="group" aria-label="語音模式">
+        <div class="mode-switch hidden" id="mode-switch" role="group" aria-label="語音模式">
           <button class="mode-button active" data-mode="pipeline" type="button">
             <span>Pipeline</span><small>OpenAI</small>
           </button>
@@ -43,6 +43,14 @@
         <label class="field field-wide">
           <span>System prompt</span>
           <textarea id="system-prompt" rows="4">You are a helpful voice assistant. Answer accurately, naturally, and concisely.</textarea>
+        </label>
+
+        <label class="field field-wide">
+          <span>LLM</span>
+          <select id="llm-model" disabled>
+            <option>正在載入可用模型…</option>
+          </select>
+          <small class="model-help" id="model-help">模型清單由後端安全載入，API key 不會傳到瀏覽器。</small>
         </label>
 
         <div class="settings-grid">
