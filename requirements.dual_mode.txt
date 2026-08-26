@@ -1,5 +1,5 @@
 fastapi>=0.115,<1
-httpx>=0.27,<1
+httpx[socks]>=0.27,<1
 openai>=2.0,<3
 pypdf>=5.0,<7
 python-multipart>=0.0.20,<1

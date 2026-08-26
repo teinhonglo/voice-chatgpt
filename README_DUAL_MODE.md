@@ -51,6 +51,8 @@ source ./path.sh openai
 source ./path.sh local
 ```
 
+The installer honors the same overrides, so a customized environment name is used consistently during both installation and startup.
+
 ## Run with the OpenAI backend environment
 
 ```bash
@@ -74,6 +76,8 @@ BACKEND=local ./run_dual_mode.sh
 ```
 
 The equivalent positional form is `./run_dual_mode.sh local`. `./run_local.sh` remains as a compatibility shortcut and always selects `BACKEND=local`.
+
+Use `BACKEND=local` when you want all four homepage modes available from one server launch. It starts the local dependencies, while the two OpenAI modes remain available on the same homepage. `BACKEND=openai` starts only the web server, so Local modes require separately running local endpoints.
 
 Local startup activates `voice-chatgpt-local`, starts Ollama and Qdrant, downloads `qwen3:8b` and `bge-m3` when missing, and starts the web app. Set `SKIP_LOCAL_MODEL_PULL=1` to skip the model check. Model data and Qdrant collections use named Docker volumes, so they survive restarts. Check the three local dependencies at <http://localhost:7860/api/local/health>.
 
@@ -99,10 +103,11 @@ export LOCAL_EMBEDDING_BASE_URL="http://127.0.0.1:8001/v1"
 export LOCAL_EMBEDDING_API_KEY="local"
 export LOCAL_EMBEDDING_MODEL="your-embedding-model"
 export QDRANT_URL="http://127.0.0.1:6333"
+export MANAGE_LOCAL_SERVICES=0
 BACKEND=local ./run_dual_mode.sh
 ```
 
-No model names are hard-coded in application logic; `.env.example` lists every override.
+`MANAGE_LOCAL_SERVICES=0` prevents the startup script from launching Docker or pulling Ollama models. No model names are hard-coded in application logic; `.env.example` lists every override.
 
 ## RAG file upload
 
@@ -145,7 +150,7 @@ BACKEND=local ./run_public.sh
 
 Copy the random `https://...trycloudflare.com` URL printed by `cloudflared`. Quick Tunnels are intended only for testing. The positional forms `./run_public.sh openai` and `./run_public.sh local` are also supported.
 
-For a stable hostname, set `CLOUDFLARE_TUNNEL_TOKEN` and run `./run_public.sh`. Protect any public hostname with Cloudflare Access and application-level authentication/rate limits. Anyone who can reach an unprotected URL can consume OpenAI quota, local GPU time, and storage.
+For a stable hostname, create a remotely managed tunnel and configure its public hostname service to point to `http://127.0.0.1:7860` (or your `PUBLIC_BIND_HOST` and `PORT`). Then set `CLOUDFLARE_TUNNEL_TOKEN` and run `./run_public.sh`. The script passes the token through `TUNNEL_TOKEN`, so it is not exposed as a command-line argument. Protect any public hostname with Cloudflare Access and application-level authentication/rate limits. Anyone who can reach an unprotected URL can consume OpenAI quota, local GPU time, and storage.
 
 ## API summary
 

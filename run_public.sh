@@ -71,7 +71,7 @@ echo "Voice app is ready at ${origin_url}."
 
 if [[ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
   echo "Starting the configured Cloudflare named tunnel."
-  cloudflared tunnel --no-autoupdate run --token "${CLOUDFLARE_TUNNEL_TOKEN}"
+  TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN}" cloudflared tunnel --no-autoupdate run
 else
   echo "Starting a temporary Quick Tunnel. Copy the trycloudflare.com URL printed below."
   echo "The URL is public and unauthenticated. Stop it with Ctrl+C when testing is complete."

@@ -7,13 +7,16 @@ cd "${project_dir}"
 
 case "${requested_backend}" in
   openai)
-    environment_files=("environment.openai.yml")
+    environment_specs=("environment.openai.yml:${OPENAI_CONDA_ENV:-voice-chatgpt-openai}")
     ;;
   local)
-    environment_files=("environment.local.yml")
+    environment_specs=("environment.local.yml:${LOCAL_CONDA_ENV:-voice-chatgpt-local}")
     ;;
   all)
-    environment_files=("environment.openai.yml" "environment.local.yml")
+    environment_specs=(
+      "environment.openai.yml:${OPENAI_CONDA_ENV:-voice-chatgpt-openai}"
+      "environment.local.yml:${LOCAL_CONDA_ENV:-voice-chatgpt-local}"
+    )
     ;;
   *)
     echo "Unsupported BACKEND='${requested_backend}'. Use openai, local, or all." >&2
@@ -30,11 +33,12 @@ else
   exit 1
 fi
 
-for environment_file in "${environment_files[@]}"; do
+for environment_spec in "${environment_specs[@]}"; do
+  environment_file="${environment_spec%%:*}"
+  environment_name="${environment_spec#*:}"
   environment_path="${project_dir}/${environment_file}"
-  environment_name="$(awk '/^name:/ {print $2; exit}' "${environment_path}")"
   if [[ -z "${environment_name}" ]]; then
-    echo "Missing environment name in ${environment_path}." >&2
+    echo "The Conda environment name for ${environment_path} is empty." >&2
     exit 1
   fi
 
@@ -43,7 +47,7 @@ for environment_file in "${environment_files[@]}"; do
     "${conda_executable}" env update --name "${environment_name}" --file "${environment_path}"
   else
     echo "Creating Conda environment: ${environment_name}"
-    "${conda_executable}" env create --file "${environment_path}"
+    "${conda_executable}" env create --name "${environment_name}" --file "${environment_path}"
   fi
 done
 
