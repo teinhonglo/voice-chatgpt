@@ -2,18 +2,13 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-backend="${1:-${BACKEND:-openai}}"
-if [[ "$#" -gt 1 ]]; then
-  echo "Usage: BACKEND=openai|local ./run_public.sh [openai|local]" >&2
-  exit 2
-fi
+export BACKEND="${BACKEND:-openai}"
 
-export BACKEND="${backend}"
 # shellcheck source=path.sh
 source "${project_dir}/path.sh"
-: "${OPENAI_API_KEY:?Set OPENAI_API_KEY before starting the public app}"
+: "${OPENAI_API_KEY:?Set OPENAI_API_KEY before starting the app}"
 
-if [[ "${BACKEND}" == "local" ]]; then
+if [ "${BACKEND}" == "local" ]; then
   # shellcheck source=start_local_services.sh
   source "${project_dir}/start_local_services.sh"
 fi
@@ -23,7 +18,6 @@ if ! command -v cloudflared >/dev/null 2>&1; then
   exit 1
 fi
 
-python_bin="python"
 bind_host="${PUBLIC_BIND_HOST:-127.0.0.1}"
 port="${PORT:-7860}"
 origin_url="http://${bind_host}:${port}"
@@ -40,12 +34,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "${project_dir}"
-"${python_bin}" -m uvicorn dual_mode.main:app \
+python -m uvicorn dual_mode.main:app \
   --host "${bind_host}" \
   --port "${port}" >"${app_log}" 2>&1 &
 app_pid=$!
 
-if ! "${python_bin}" - "${origin_url}/api/health" <<'PY'
+if ! python - "${origin_url}/api/health" <<'PY'
 import json
 import sys
 import time

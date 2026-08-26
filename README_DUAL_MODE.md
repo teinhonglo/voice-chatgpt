@@ -34,12 +34,12 @@ BACKEND=openai ./install_conda_envs.sh
 BACKEND=local ./install_conda_envs.sh
 ```
 
-`path.sh` is the only environment-selection entry point. It uses the fixed Conda executable at `/share/homes/teinhonglo/anaconda3/bin/conda`. Every startup script exports `BACKEND`, sources `path.sh`, and activates one of these environments:
+`path.sh` is the environment-selection entry point. It uses the fixed Conda executable at `/share/homes/teinhonglo/anaconda3/bin/conda`. The single startup script, `run.sh`, exports `BACKEND`, sources `path.sh`, and activates one of these environments:
 
 | `BACKEND` | Default Conda environment | Extra startup behavior |
 |---|---|---|
-| `openai` | `voice-chatgpt-openai` | start the web server only |
-| `local` | `voice-chatgpt-local` | start Ollama and Qdrant, then the web server |
+| `openai` | `voice-chatgpt-openai` | start the web server and Cloudflare Tunnel |
+| `local` | `voice-chatgpt-local` | start Ollama, Qdrant, the web server, and Cloudflare Tunnel |
 
 `BACKEND` selects the server environment and dependency bootstrap. It does not remove any of the four homepage modes.
 
@@ -53,16 +53,14 @@ export BACKEND=local
 source ./path.sh
 ```
 
-The installer honors the same overrides, so a customized environment name is used consistently during both installation and startup.
-
 ## Run with the OpenAI backend environment
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-BACKEND=openai ./run_dual_mode.sh
+BACKEND=openai ./run.sh
 ```
 
-The equivalent positional form is `./run_dual_mode.sh openai`. Open <http://localhost:7860>. Browsers allow microphone access on localhost. Remote deployments must use HTTPS.
+The script starts the web app and Cloudflare Tunnel together. Copy the public HTTPS URL printed by `cloudflared`.
 
 ## Run with the Local backend environment (Ollama + Qdrant)
 
@@ -74,12 +72,10 @@ Requirements:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-BACKEND=local ./run_dual_mode.sh
+BACKEND=local ./run.sh
 ```
 
-The equivalent positional form is `./run_dual_mode.sh local`. `./run_local.sh` remains as a compatibility shortcut and always selects `BACKEND=local`.
-
-Use `BACKEND=local` when you want all four homepage modes available from one server launch. It starts the local dependencies, while the two OpenAI modes remain available on the same homepage. `BACKEND=openai` starts only the web server, so Local modes require separately running local endpoints.
+Use `BACKEND=local` when you want all four homepage modes available from one server launch. It starts the local dependencies, while the two OpenAI modes remain available on the same homepage. `BACKEND=openai` does not start local dependencies, so Local modes then require separately running local endpoints.
 
 Local startup activates `voice-chatgpt-local`, starts Ollama and Qdrant, downloads `qwen3:8b` and `bge-m3` when missing, and starts the web app. Set `SKIP_LOCAL_MODEL_PULL=1` to skip the model check. Model data and Qdrant collections use named Docker volumes, so they survive restarts. Check the three local dependencies at <http://localhost:7860/api/local/health>.
 
@@ -106,7 +102,7 @@ export LOCAL_EMBEDDING_API_KEY="local"
 export LOCAL_EMBEDDING_MODEL="your-embedding-model"
 export QDRANT_URL="http://127.0.0.1:6333"
 export MANAGE_LOCAL_SERVICES=0
-BACKEND=local ./run_dual_mode.sh
+BACKEND=local ./run.sh
 ```
 
 `MANAGE_LOCAL_SERVICES=0` prevents the startup script from launching Docker or pulling Ollama models. No model names are hard-coded in application logic; `.env.example` lists every override.
@@ -141,18 +137,18 @@ Copy `.env.example` values into your environment to change them. Set stable `RAG
 
 ## Public HTTPS URL with Cloudflare Tunnel
 
-Install [`cloudflared`](https://developers.cloudflare.com/tunnel/downloads/). `run_public.sh` uses the same `BACKEND` selection and starts the matching Conda environment:
+Install [`cloudflared`](https://developers.cloudflare.com/tunnel/downloads/). `run.sh` uses `BACKEND` to start the matching Conda environment and always creates a public HTTPS tunnel:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-BACKEND=openai ./run_public.sh
+BACKEND=openai ./run.sh
 # or
-BACKEND=local ./run_public.sh
+BACKEND=local ./run.sh
 ```
 
-Copy the random `https://...trycloudflare.com` URL printed by `cloudflared`. Quick Tunnels are intended only for testing. The positional forms `./run_public.sh openai` and `./run_public.sh local` are also supported.
+Copy the random `https://...trycloudflare.com` URL printed by `cloudflared`. Quick Tunnels are intended only for testing.
 
-For a stable hostname, create a remotely managed tunnel and configure its public hostname service to point to `http://127.0.0.1:7860` (or your `PUBLIC_BIND_HOST` and `PORT`). Then set `CLOUDFLARE_TUNNEL_TOKEN` and run `./run_public.sh`. The script passes the token through `TUNNEL_TOKEN`, so it is not exposed as a command-line argument. Protect any public hostname with Cloudflare Access and application-level authentication/rate limits. Anyone who can reach an unprotected URL can consume OpenAI quota, local GPU time, and storage.
+For a stable hostname, create a remotely managed tunnel and configure its public hostname service to point to `http://127.0.0.1:7860` (or your `PUBLIC_BIND_HOST` and `PORT`). Then set `CLOUDFLARE_TUNNEL_TOKEN` and run `./run.sh`. The script passes the token through `TUNNEL_TOKEN`, so it is not exposed as a command-line argument. Protect any public hostname with Cloudflare Access and application-level authentication/rate limits. Anyone who can reach an unprotected URL can consume OpenAI quota, local GPU time, and storage.
 
 ## API summary
 
