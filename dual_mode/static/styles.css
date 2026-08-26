@@ -55,15 +55,18 @@ h2 { margin-bottom: 0; font-size: 1.2rem; letter-spacing: -0.02em; }
 .subtitle { margin-bottom: 0; color: var(--muted); }
 
 .mode-switch {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(138px, 1fr));
+  gap: 4px;
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(18, 20, 24, 0.92);
-  white-space: nowrap;
 }
 
 .mode-button {
+  display: grid;
+  gap: 2px;
   padding: 11px 16px;
   border: 0;
   border-radius: 10px;
@@ -72,6 +75,8 @@ h2 { margin-bottom: 0; font-size: 1.2rem; letter-spacing: -0.02em; }
   cursor: pointer;
   transition: 160ms ease;
 }
+
+.mode-button small { font-size: 0.64rem; font-weight: 700; opacity: 0.68; }
 
 .mode-button.active { color: #07120d; background: var(--accent); font-weight: 800; }
 
@@ -224,8 +229,7 @@ footer p { margin-bottom: 0; }
 @media (max-width: 800px) {
   .app-shell { width: min(100% - 20px, 680px); padding-top: 28px; }
   .hero { align-items: stretch; flex-direction: column; gap: 20px; }
-  .mode-switch { display: flex; }
-  .mode-button { flex: 1; }
+  .mode-switch { width: 100%; }
   .settings-grid { grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr); }
   .voice-field { grid-column: 1 / -1; }
   .upload-row { grid-template-columns: 1fr 1fr; }

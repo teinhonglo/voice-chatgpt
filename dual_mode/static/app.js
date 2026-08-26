@@ -20,7 +20,8 @@ const LANGUAGES = [
 
 const VOICES = ["marin", "cedar", "coral", "alloy", "ash", "ballad", "echo", "sage", "shimmer", "verse"];
 const STORAGE_KEY = "voice-chatgpt-dual-mode-settings";
-const RAG_STORAGE_KEY = "voice-chatgpt-dual-mode-rag";
+const CLOUD_RAG_STORAGE_KEY = "voice-chatgpt-dual-mode-rag";
+const LOCAL_RAG_STORAGE_KEY = "voice-chatgpt-local-rag";
 const RAG_TOOL_NAME = "search_knowledge_base";
 
 const el = {
@@ -35,6 +36,8 @@ const el = {
   ragDeleteButton: document.querySelector("#rag-delete-button"),
   ragStatus: document.querySelector("#rag-status"),
   ragFileList: document.querySelector("#rag-file-list"),
+  ragHelp: document.querySelector("#rag-help"),
+  privacyNote: document.querySelector("#privacy-note"),
   status: document.querySelector("#status-text"),
   stateDot: document.querySelector(".state-dot"),
   modeDescription: document.querySelector("#mode-description"),
@@ -67,9 +70,26 @@ const state = {
   muted: false,
   inputTranscript: "",
   outputTranscript: "",
-  ragToken: "",
-  ragFileNames: [],
+  knowledge: {
+    cloud: { token: "", files: [] },
+    local: { token: "", files: [] },
+  },
+  localTurnController: null,
+  localAudioQueue: [],
+  localAudioObjectUrl: "",
 };
+
+function isLocalMode() {
+  return state.mode.startsWith("local-");
+}
+
+function isRealtimeMode() {
+  return state.mode === "realtime" || state.mode === "local-realtime";
+}
+
+function activeKnowledge() {
+  return state.knowledge[isLocalMode() ? "local" : "cloud"];
+}
 
 function populateSelects() {
   for (const [code, label] of LANGUAGES) {
@@ -102,24 +122,28 @@ function currentSettings() {
 }
 
 function loadKnowledgeBase() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(RAG_STORAGE_KEY) || "{}");
-    if (typeof saved.token !== "string" || !Array.isArray(saved.files)) return;
-    state.ragToken = saved.token;
-    state.ragFileNames = saved.files.filter((name) => typeof name === "string").slice(0, 100);
-  } catch {
-    localStorage.removeItem(RAG_STORAGE_KEY);
+  for (const [engine, storageKey] of [["cloud", CLOUD_RAG_STORAGE_KEY], ["local", LOCAL_RAG_STORAGE_KEY]]) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+      if (typeof saved.token !== "string" || !Array.isArray(saved.files)) continue;
+      state.knowledge[engine].token = saved.token;
+      state.knowledge[engine].files = saved.files.filter((name) => typeof name === "string").slice(0, 100);
+    } catch {
+      localStorage.removeItem(storageKey);
+    }
   }
 }
 
-function saveKnowledgeBase() {
-  if (!state.ragToken) {
-    localStorage.removeItem(RAG_STORAGE_KEY);
+function saveKnowledgeBase(engine = isLocalMode() ? "local" : "cloud") {
+  const storageKey = engine === "local" ? LOCAL_RAG_STORAGE_KEY : CLOUD_RAG_STORAGE_KEY;
+  const knowledge = state.knowledge[engine];
+  if (!knowledge.token) {
+    localStorage.removeItem(storageKey);
     return;
   }
   localStorage.setItem(
-    RAG_STORAGE_KEY,
-    JSON.stringify({ token: state.ragToken, files: state.ragFileNames }),
+    storageKey,
+    JSON.stringify({ token: knowledge.token, files: knowledge.files }),
   );
 }
 
@@ -129,26 +153,34 @@ function setRagStatus(message, kind = "idle") {
 }
 
 function renderKnowledgeBase() {
+  const local = isLocalMode();
+  const knowledge = activeKnowledge();
   el.ragFileList.replaceChildren();
-  for (const filename of state.ragFileNames) {
+  for (const filename of knowledge.files) {
     const chip = document.createElement("span");
     chip.className = "file-chip";
     chip.textContent = filename;
     chip.title = filename;
     el.ragFileList.append(chip);
   }
-  el.ragFileList.classList.toggle("hidden", state.ragFileNames.length === 0);
-  el.ragDeleteButton.disabled = !state.ragToken;
+  el.ragFileList.classList.toggle("hidden", knowledge.files.length === 0);
+  el.ragDeleteButton.disabled = !knowledge.token;
   setRagStatus(
-    state.ragToken ? `已啟用 · ${state.ragFileNames.length} 個檔案` : "尚未上傳檔案",
-    state.ragToken ? "ready" : "idle",
+    knowledge.token
+      ? `${local ? "Local / Qdrant" : "OpenAI"} · 已啟用 · ${knowledge.files.length} 個檔案`
+      : `${local ? "Local / Qdrant" : "OpenAI"} · 尚未上傳檔案`,
+    knowledge.token ? "ready" : "idle",
   );
+  el.ragHelp.textContent = local
+    ? "目前為地端知識庫：檔案在本機解析，embedding 與 Qdrant 都走地端；兩個 Local 模式共用。支援 PDF、DOCX、PPTX、文字與常見程式碼格式。"
+    : "目前為 OpenAI 知識庫：完成索引後，兩個 OpenAI 模式會共用相同檔案。";
 }
 
 function setRagControlsBusy(busy) {
+  el.modeButtons.forEach((button) => { button.disabled = busy; });
   el.ragFiles.disabled = busy;
   el.ragUploadButton.disabled = busy;
-  el.ragDeleteButton.disabled = busy || !state.ragToken;
+  el.ragDeleteButton.disabled = busy || !activeKnowledge().token;
   el.recordButton.disabled = busy;
   el.callButton.disabled = busy;
 }
@@ -183,6 +215,7 @@ function addMessage(role, text) {
 }
 
 function clearConversation() {
+  stopLocalTurn();
   state.pipelineHistory = [];
   el.chatLog.replaceChildren();
   const empty = document.createElement("div");
@@ -200,7 +233,8 @@ function appendSettings(formData) {
   formData.append("language_a", settings.languageA);
   formData.append("language_b", settings.languageB);
   formData.append("voice", settings.voice);
-  if (state.ragToken) formData.append("rag_token", state.ragToken);
+  const knowledge = activeKnowledge();
+  if (knowledge.token) formData.append("rag_token", knowledge.token);
 }
 
 function errorDetail(payload, fallback) {
@@ -211,6 +245,7 @@ function errorDetail(payload, fallback) {
 async function setMode(mode) {
   if (mode === state.mode) return;
   if (state.pc) stopRealtime();
+  stopLocalTurn();
   if (state.recorder && state.recorder.state === "recording") {
     state.discardRecording = true;
     state.recorder.stop();
@@ -218,13 +253,25 @@ async function setMode(mode) {
 
   state.mode = mode;
   el.modeButtons.forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
-  const realtime = mode === "realtime";
+  const realtime = isRealtimeMode();
+  const local = isLocalMode();
   el.pipelineControls.classList.toggle("hidden", realtime);
   el.realtimeControls.classList.toggle("hidden", !realtime);
+  const descriptions = {
+    pipeline: "OpenAI 依序完成語音辨識、Responses 回覆與語音合成，適合保留清楚的逐輪紀錄。",
+    realtime: "OpenAI Realtime 端到端雙向串流，可自然插話並立即打斷 AI。",
+    "local-pipeline": "OpenAI 負責 ASR/TTS；RAG、embedding、Qdrant 與 LLM 回覆都在地端執行。",
+    "local-realtime": "OpenAI 串流 ASR/TTS + 地端 RAG/LLM。麥克風持續開啟，開口即可中止播放與尚未完成的生成。",
+  };
   el.modeDescription.textContent = realtime
-    ? "持續雙向串流，可自然插話並立即打斷 AI。連線期間修改設定不會生效，請重新連線套用。"
-    : "錄一段話後，依序完成語音辨識、文字回覆與語音合成。適合保留清楚的逐輪紀錄。";
-  setStatus(realtime ? "Full Duplex 待命" : "Pipeline 待命");
+    ? `${descriptions[mode]} 連線期間修改設定時，請重新連線套用。`
+    : descriptions[mode];
+  el.privacyNote.textContent = local
+    ? "語音由 AI 生成。檔案、RAG、embedding 與 LLM 留在地端；麥克風音訊會送至 OpenAI ASR，回答文字會送至 OpenAI TTS。"
+    : "語音由 AI 生成。OpenAI 模式會將上傳檔案交由 OpenAI 建立檢索索引；請勿上傳未經授權的機密資料。";
+  renderKnowledgeBase();
+  el.callButtonLabel.textContent = local ? "開始 Local Full Duplex" : "開始 Full Duplex";
+  setStatus(`${local ? "Local " : ""}${realtime ? "Full Duplex" : "Pipeline"} 待命`);
 }
 
 async function uploadKnowledgeFiles() {
@@ -241,12 +288,15 @@ async function uploadKnowledgeFiles() {
   setRagControlsBusy(true);
   setRagStatus("正在上傳並建立索引…");
 
+  const engine = isLocalMode() ? "local" : "cloud";
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file, file.name));
-  if (state.ragToken) formData.append("rag_token", state.ragToken);
+  const knowledge = state.knowledge[engine];
+  if (knowledge.token) formData.append("rag_token", knowledge.token);
 
   try {
-    const response = await fetch("/api/rag/upload", { method: "POST", body: formData });
+    const endpoint = engine === "local" ? "/api/local/rag/upload" : "/api/rag/upload";
+    const response = await fetch(endpoint, { method: "POST", body: formData });
     let payload;
     try {
       payload = await response.json();
@@ -255,9 +305,9 @@ async function uploadKnowledgeFiles() {
     }
     if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
 
-    state.ragToken = payload.rag_token;
-    state.ragFileNames = [...state.ragFileNames, ...payload.files];
-    saveKnowledgeBase();
+    knowledge.token = payload.rag_token;
+    knowledge.files = [...knowledge.files, ...payload.files];
+    saveKnowledgeBase(engine);
     el.ragFiles.value = "";
     renderKnowledgeBase();
   } catch (error) {
@@ -268,8 +318,11 @@ async function uploadKnowledgeFiles() {
 }
 
 async function deleteKnowledgeBase() {
-  if (!state.ragToken) return;
-  if (!window.confirm("要刪除這個知識庫及其 OpenAI 檔案嗎？")) return;
+  const engine = isLocalMode() ? "local" : "cloud";
+  const knowledge = state.knowledge[engine];
+  if (!knowledge.token) return;
+  const target = engine === "local" ? "本機 Qdrant 知識庫" : "這個知識庫及其 OpenAI 檔案";
+  if (!window.confirm(`要刪除${target}嗎？`)) return;
   if (state.pc) stopRealtime();
   if (state.recorder?.state === "recording") {
     state.discardRecording = true;
@@ -279,9 +332,10 @@ async function deleteKnowledgeBase() {
   setRagStatus("正在刪除知識庫…");
 
   const formData = new FormData();
-  formData.append("rag_token", state.ragToken);
+  formData.append("rag_token", knowledge.token);
   try {
-    const response = await fetch("/api/rag/delete", { method: "POST", body: formData });
+    const endpoint = engine === "local" ? "/api/local/rag/delete" : "/api/rag/delete";
+    const response = await fetch(endpoint, { method: "POST", body: formData });
     let payload;
     try {
       payload = await response.json();
@@ -289,9 +343,9 @@ async function deleteKnowledgeBase() {
       payload = null;
     }
     if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
-    state.ragToken = "";
-    state.ragFileNames = [];
-    saveKnowledgeBase();
+    knowledge.token = "";
+    knowledge.files = [];
+    saveKnowledgeBase(engine);
     renderKnowledgeBase();
   } catch (error) {
     setRagStatus(`刪除失敗：${error.message}`, "error");
@@ -338,11 +392,13 @@ function stopRecording() {
 }
 
 async function sendPipelineTurn(blob) {
+  el.modeButtons.forEach((button) => { button.disabled = true; });
   el.recordButton.disabled = true;
   el.ragFiles.disabled = true;
   el.ragUploadButton.disabled = true;
   el.ragDeleteButton.disabled = true;
-  setStatus("OpenAI 正在處理…", "busy");
+  const local = isLocalMode();
+  setStatus(local ? "地端 RAG / LLM 正在處理…" : "OpenAI 正在處理…", "busy");
   const extension = blob.type.includes("mp4") ? "m4a" : "webm";
   const formData = new FormData();
   formData.append("audio", blob, `recording.${extension}`);
@@ -350,7 +406,8 @@ async function sendPipelineTurn(blob) {
   appendSettings(formData);
 
   try {
-    const response = await fetch("/api/pipeline/turn", { method: "POST", body: formData });
+    const endpoint = local ? "/api/local/pipeline/turn" : "/api/pipeline/turn";
+    const response = await fetch(endpoint, { method: "POST", body: formData });
     let payload;
     try {
       payload = await response.json();
@@ -368,14 +425,15 @@ async function sendPipelineTurn(blob) {
     state.pipelineHistory = state.pipelineHistory.slice(-20);
     el.pipelineAudio.src = `data:${payload.audio_mime};base64,${payload.audio_base64}`;
     await el.pipelineAudio.play().catch(() => {});
-    setStatus("Pipeline 待命", "ready");
+    setStatus(local ? "Local Pipeline 待命" : "Pipeline 待命", "ready");
   } catch (error) {
     setStatus(`處理失敗：${error.message}`, "error");
   } finally {
+    el.modeButtons.forEach((button) => { button.disabled = false; });
     el.recordButton.disabled = false;
     el.ragFiles.disabled = false;
     el.ragUploadButton.disabled = false;
-    el.ragDeleteButton.disabled = !state.ragToken;
+    el.ragDeleteButton.disabled = !activeKnowledge().token;
   }
 }
 
@@ -389,6 +447,7 @@ function showLiveCaption(role, text) {
 }
 
 async function runRealtimeKnowledgeTools(toolCalls) {
+  const knowledge = state.knowledge.cloud;
   setStatus("正在查詢知識庫…", "busy");
   for (const call of toolCalls) {
     let output;
@@ -396,11 +455,11 @@ async function runRealtimeKnowledgeTools(toolCalls) {
       const args = JSON.parse(call.arguments || "{}");
       const query = typeof args.query === "string" ? args.query.trim() : "";
       if (!query) throw new Error("Realtime 未提供有效的檢索問題");
-      if (!state.ragToken) throw new Error("知識庫已停用，請重新連線");
+      if (!knowledge.token) throw new Error("知識庫已停用，請重新連線");
 
       const formData = new FormData();
       formData.append("query", query);
-      formData.append("rag_token", state.ragToken);
+      formData.append("rag_token", knowledge.token);
       const response = await fetch("/api/rag/search", { method: "POST", body: formData });
       let payload;
       try {
@@ -428,9 +487,114 @@ async function runRealtimeKnowledgeTools(toolCalls) {
 
   if (state.dataChannel?.readyState === "open") {
     state.dataChannel.send(JSON.stringify({ type: "response.create" }));
-    if (state.ragToken) {
-      setRagStatus(`已啟用 · ${state.ragFileNames.length} 個檔案`, "ready");
+    if (knowledge.token) {
+      setRagStatus(`OpenAI · 已啟用 · ${knowledge.files.length} 個檔案`, "ready");
     }
+  }
+}
+
+function stopLocalTurn() {
+  state.localTurnController?.abort();
+  state.localTurnController = null;
+  state.localAudioQueue = [];
+  el.pipelineAudio.pause();
+  el.pipelineAudio.removeAttribute("src");
+  el.pipelineAudio.load();
+  if (state.localAudioObjectUrl) URL.revokeObjectURL(state.localAudioObjectUrl);
+  state.localAudioObjectUrl = "";
+  state.outputTranscript = "";
+  showLiveCaption("assistant", "");
+}
+
+function playNextLocalAudio() {
+  if (state.localAudioObjectUrl || !state.localAudioQueue.length) return;
+  const blob = state.localAudioQueue.shift();
+  state.localAudioObjectUrl = URL.createObjectURL(blob);
+  el.pipelineAudio.src = state.localAudioObjectUrl;
+  el.pipelineAudio.onended = () => {
+    URL.revokeObjectURL(state.localAudioObjectUrl);
+    state.localAudioObjectUrl = "";
+    playNextLocalAudio();
+  };
+  void el.pipelineAudio.play().catch(() => {});
+}
+
+function queueLocalAudio(audioBase64, mimeType) {
+  const binary = atob(audioBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  state.localAudioQueue.push(new Blob([bytes], { type: mimeType || "audio/mpeg" }));
+  playNextLocalAudio();
+}
+
+async function runLocalDuplexTurn(transcript) {
+  stopLocalTurn();
+  const controller = new AbortController();
+  state.localTurnController = controller;
+  state.outputTranscript = "";
+  setStatus("地端 RAG / LLM 正在回答…", "busy");
+
+  const formData = new FormData();
+  formData.append("transcript", transcript);
+  formData.append("history_json", JSON.stringify(state.pipelineHistory));
+  appendSettings(formData);
+
+  try {
+    const response = await fetch("/api/local/realtime/turn", {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      let payload;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      throw new Error(errorDetail(payload, `HTTP ${response.status}`));
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalReply = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "text_delta") {
+          state.outputTranscript += event.delta || "";
+          showLiveCaption("assistant", state.outputTranscript);
+        } else if (event.type === "audio") {
+          queueLocalAudio(event.audio_base64, event.audio_mime);
+        } else if (event.type === "done") {
+          finalReply = (event.reply || state.outputTranscript).trim();
+        } else if (event.type === "error") {
+          throw new Error(event.message || "Local Full Duplex failed");
+        }
+      }
+      if (done) break;
+    }
+    if (!finalReply) finalReply = state.outputTranscript.trim();
+    if (finalReply) {
+      addMessage("assistant", finalReply);
+      state.pipelineHistory.push(
+        { role: "user", content: transcript },
+        { role: "assistant", content: finalReply },
+      );
+      state.pipelineHistory = state.pipelineHistory.slice(-20);
+    }
+    state.outputTranscript = "";
+    showLiveCaption("assistant", "");
+    setStatus("Local Full Duplex 已連線，可直接說話", "ready");
+  } catch (error) {
+    if (error.name !== "AbortError") setStatus(`地端回答失敗：${error.message}`, "error");
+  } finally {
+    if (state.localTurnController === controller) state.localTurnController = null;
   }
 }
 
@@ -443,7 +607,10 @@ async function handleRealtimeEvent(event) {
   }
   if (type === "conversation.item.input_audio_transcription.completed") {
     const transcript = (event.transcript || state.inputTranscript).trim();
-    if (transcript) addMessage("user", transcript);
+    if (transcript) {
+      addMessage("user", transcript);
+      if (state.mode === "local-realtime") void runLocalDuplexTurn(transcript);
+    }
     state.inputTranscript = "";
     showLiveCaption("user", "");
     return;
@@ -461,6 +628,7 @@ async function handleRealtimeEvent(event) {
     return;
   }
   if (type === "input_audio_buffer.speech_started") {
+    if (state.mode === "local-realtime") stopLocalTurn();
     setStatus("正在聆聽…", "live");
     return;
   }
@@ -485,10 +653,14 @@ async function handleRealtimeEvent(event) {
 }
 
 async function startRealtime() {
+  const local = state.mode === "local-realtime";
   el.callButton.disabled = true;
+  el.modeButtons.forEach((button) => { button.disabled = true; });
   setStatus("正在建立安全連線…", "busy");
   try {
-    state.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
     state.pc = new RTCPeerConnection();
     state.pc.addEventListener("track", (event) => {
       el.remoteAudio.srcObject = event.streams[0] || new MediaStream([event.track]);
@@ -502,7 +674,10 @@ async function startRealtime() {
     state.micStream.getTracks().forEach((track) => state.pc.addTrack(track, state.micStream));
 
     state.dataChannel = state.pc.createDataChannel("oai-events");
-    state.dataChannel.addEventListener("open", () => setStatus("已連線，可直接說話", "ready"));
+    state.dataChannel.addEventListener("open", () => setStatus(
+      local ? "Local Full Duplex 已連線，可直接說話" : "已連線，可直接說話",
+      "ready",
+    ));
     state.dataChannel.addEventListener("message", (message) => {
       try {
         void handleRealtimeEvent(JSON.parse(message.data));
@@ -516,7 +691,8 @@ async function startRealtime() {
     const formData = new FormData();
     formData.append("sdp", offer.sdp);
     appendSettings(formData);
-    const response = await fetch("/api/realtime/session", { method: "POST", body: formData });
+    const endpoint = local ? "/api/local/realtime/session" : "/api/realtime/session";
+    const response = await fetch(endpoint, { method: "POST", body: formData });
     if (!response.ok) {
       let payload;
       try {
@@ -529,17 +705,19 @@ async function startRealtime() {
     await state.pc.setRemoteDescription({ type: "answer", sdp: await response.text() });
 
     el.callButton.classList.add("connected");
-    el.callButtonLabel.textContent = "結束 Full Duplex";
+    el.callButtonLabel.textContent = local ? "結束 Local Full Duplex" : "結束 Full Duplex";
     el.muteButton.disabled = false;
   } catch (error) {
     stopRealtime(false);
     setStatus(`連線失敗：${error.message}`, "error");
   } finally {
     el.callButton.disabled = false;
+    el.modeButtons.forEach((button) => { button.disabled = false; });
   }
 }
 
 function stopRealtime(updateStatus = true) {
+  stopLocalTurn();
   state.dataChannel?.close();
   state.pc?.close();
   state.micStream?.getTracks().forEach((track) => track.stop());
@@ -551,11 +729,11 @@ function stopRealtime(updateStatus = true) {
   state.outputTranscript = "";
   el.remoteAudio.srcObject = null;
   el.callButton.classList.remove("connected");
-  el.callButtonLabel.textContent = "開始 Full Duplex";
+  el.callButtonLabel.textContent = state.mode === "local-realtime" ? "開始 Local Full Duplex" : "開始 Full Duplex";
   el.muteButton.textContent = "靜音";
   el.muteButton.disabled = true;
   el.liveCaption.classList.add("hidden");
-  if (updateStatus) setStatus("Full Duplex 待命");
+  if (updateStatus) setStatus(state.mode === "local-realtime" ? "Local Full Duplex 待命" : "Full Duplex 待命");
 }
 
 function toggleMute() {
@@ -564,7 +742,8 @@ function toggleMute() {
     track.enabled = !state.muted;
   });
   el.muteButton.textContent = state.muted ? "取消靜音" : "靜音";
-  setStatus(state.muted ? "麥克風已靜音" : "已連線，可直接說話", state.muted ? "idle" : "ready");
+  const ready = state.mode === "local-realtime" ? "Local Full Duplex 已連線，可直接說話" : "已連線，可直接說話";
+  setStatus(state.muted ? "麥克風已靜音" : ready, state.muted ? "idle" : "ready");
 }
 
 function initialize() {

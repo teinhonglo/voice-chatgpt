@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <title>OpenAI 雙模式語音聊天</title>
+    <title>Cloud / Local 四模式語音聊天</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -12,15 +12,21 @@
       <header class="hero">
         <div>
           <p class="eyebrow">VOICE-IN / VOICE-OUT</p>
-          <h1>OpenAI 雙模式語音聊天</h1>
+          <h1>Cloud / Local 語音聊天</h1>
           <p class="subtitle">用 Language A 說話，由助理用 Language B 回答。</p>
         </div>
         <div class="mode-switch" role="group" aria-label="語音模式">
           <button class="mode-button active" data-mode="pipeline" type="button">
-            Pipeline
+            <span>Pipeline</span><small>OpenAI</small>
           </button>
           <button class="mode-button" data-mode="realtime" type="button">
-            Full Duplex
+            <span>Full Duplex</span><small>OpenAI</small>
+          </button>
+          <button class="mode-button" data-mode="local-pipeline" type="button">
+            <span>Pipeline</span><small>Local LLM + RAG</small>
+          </button>
+          <button class="mode-button" data-mode="local-realtime" type="button">
+            <span>Full Duplex</span><small>Local LLM + RAG</small>
           </button>
         </div>
       </header>
@@ -62,7 +68,7 @@
             <p class="step-label">02 / KNOWLEDGE</p>
             <h2 id="knowledge-heading">RAG 知識庫</h2>
           </div>
-          <span class="knowledge-state" id="rag-status">尚未上傳檔案</span>
+          <span class="knowledge-state" id="rag-status">OpenAI · 尚未上傳檔案</span>
         </div>
 
         <div class="upload-row">
@@ -83,8 +89,8 @@
           </button>
         </div>
         <div class="knowledge-files hidden" id="rag-file-list" aria-live="polite"></div>
-        <p class="field-help">
-          可一次上傳最多 10 個檔案；支援 PDF、Word、PowerPoint、Markdown、純文字與常見程式碼格式。完成索引後，Pipeline 與 Full Duplex 會共用同一個知識庫。
+        <p class="field-help" id="rag-help">
+          目前為 OpenAI 知識庫；完成索引後，兩個 OpenAI 模式會共用相同檔案。
         </p>
       </section>
 
@@ -135,7 +141,7 @@
       </section>
 
       <footer>
-        <p>語音由 AI 生成。上傳的檔案會交由 OpenAI 建立檢索索引；請勿上傳未經授權的機密資料。</p>
+        <p id="privacy-note">語音由 AI 生成。OpenAI 模式會將上傳檔案交由 OpenAI 建立檢索索引；請勿上傳未經授權的機密資料。</p>
       </footer>
     </main>
     <script src="/static/app.js" defer></script>
