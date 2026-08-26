@@ -7,7 +7,7 @@ This implementation adds a new browser UI with a one-click switch between two Op
 | Pipeline | speech-to-text → Responses API → text-to-speech | predictable turns, clear transcripts, easier debugging |
 | Full Duplex | browser WebRTC ↔ OpenAI Realtime API | low-latency natural conversation with interruption |
 
-Both modes share the homepage settings for **System prompt**, **Language A** (the user speaks), **Language B** (the assistant answers), and **Voice**. The API key never goes to the browser.
+Both modes share the homepage settings for **System prompt**, **Language A** (the user speaks), **Language B** (the assistant answers), **Voice**, and an optional uploaded **RAG knowledge base**. The API key never goes to the browser.
 
 ## Run locally
 
@@ -25,6 +25,19 @@ Open <http://localhost:7860>. Browsers allow microphone access on localhost. For
 
 The page defaults to Traditional Chinese input, English output, and the `marin` voice. Settings are saved in the browser and may be changed at any time. In an active Full Duplex call, disconnect and reconnect to apply changed settings.
 
+## Upload and use RAG files
+
+Use the **RAG 知識庫** card on the homepage:
+
+1. Select one or more files and click **上傳並建立索引**.
+2. Wait until the status changes to **已啟用**. The server waits for OpenAI to finish indexing before enabling the knowledge base.
+3. Start either Pipeline or Full Duplex mode. Both modes automatically use the same uploaded files when relevant.
+4. Use **清除知識庫** to delete the vector store and its uploaded OpenAI files.
+
+You can add more files later. Each upload accepts up to 10 files, each knowledge base holds up to 50 files, and the defaults are 20 MB per file and 50 MB total per request. Supported formats are `.c`, `.cpp`, `.cs`, `.css`, `.doc`, `.docx`, `.go`, `.html`, `.java`, `.js`, `.json`, `.md`, `.pdf`, `.php`, `.pptx`, `.py`, `.rb`, `.sh`, `.tex`, `.ts`, and `.txt`.
+
+The browser saves a signed, non-secret knowledge-base token in local storage so the same browser can continue using and deleting the vector store after a refresh. Set a stable `RAG_TOKEN_SECRET` in production; otherwise the server derives the signature from `OPENAI_API_KEY`, and changing the API key invalidates existing browser tokens. Vector stores expire seven days after their last activity by default.
+
 ## Optional model overrides
 
 Copy the names from `.env.example` into your deployment environment to change models. Defaults are:
@@ -39,11 +52,15 @@ Copy the names from `.env.example` into your deployment environment to change mo
 
 - `POST /api/pipeline/turn` accepts one browser recording and runs all three Pipeline calls on the server.
 - `POST /api/realtime/session` accepts the browser SDP offer and forwards it with the configured Realtime session to OpenAI's unified WebRTC endpoint.
+- `POST /api/rag/upload` uploads files to the OpenAI Files API, adds them to a vector store, and waits for indexing.
+- `POST /api/rag/search` performs vector-store search for the Realtime function tool; Pipeline uses the hosted `file_search` tool directly.
+- `POST /api/rag/delete` deletes the vector store and then cleans up the uploaded OpenAI file objects.
 - The browser receives only the SDP answer. The standard server API key remains server-side.
 - The server validates language codes, voice names, prompt size, history roles, SDP size, and recording size.
+- Uploaded knowledge-base text is explicitly treated as untrusted reference data, not as instructions that can override the System prompt.
 - The UI explicitly discloses that its spoken output is AI-generated.
 
-For production, add authentication, per-user rate limits, request logging with redaction, and your own retention policy. Do not log audio, transcripts, prompts, or API keys by default.
+For production, add authentication, per-user rate limits, request logging with redaction, and your own retention policy. Do not log audio, transcripts, prompts, uploaded file contents, or API keys by default.
 
 ## Tests
 
@@ -65,7 +82,7 @@ export OPENAI_API_KEY="sk-..."
 
 The script starts the voice application locally, checks `/api/health`, and then starts a Cloudflare Quick Tunnel. Copy the random `https://...trycloudflare.com` URL printed by `cloudflared`. No Cloudflare account or inbound firewall port is required. The URL remains active only while the script is running.
 
-Quick Tunnels are intended for testing. The application has no built-in user authentication, so anyone with the URL can consume the configured OpenAI API quota. Do not share it broadly.
+Quick Tunnels are intended for testing. The application has no built-in user authentication, so anyone with the URL can consume the configured OpenAI API quota and upload files into your OpenAI project. Do not share it broadly.
 
 For a stable hostname such as `voice.example.com`:
 

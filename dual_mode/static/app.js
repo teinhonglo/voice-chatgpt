@@ -20,6 +20,8 @@ const LANGUAGES = [
 
 const VOICES = ["marin", "cedar", "coral", "alloy", "ash", "ballad", "echo", "sage", "shimmer", "verse"];
 const STORAGE_KEY = "voice-chatgpt-dual-mode-settings";
+const RAG_STORAGE_KEY = "voice-chatgpt-dual-mode-rag";
+const RAG_TOOL_NAME = "search_knowledge_base";
 
 const el = {
   modeButtons: [...document.querySelectorAll(".mode-button")],
@@ -28,6 +30,11 @@ const el = {
   languageB: document.querySelector("#language-b"),
   voice: document.querySelector("#voice"),
   savedIndicator: document.querySelector("#saved-indicator"),
+  ragFiles: document.querySelector("#rag-files"),
+  ragUploadButton: document.querySelector("#rag-upload-button"),
+  ragDeleteButton: document.querySelector("#rag-delete-button"),
+  ragStatus: document.querySelector("#rag-status"),
+  ragFileList: document.querySelector("#rag-file-list"),
   status: document.querySelector("#status-text"),
   stateDot: document.querySelector(".state-dot"),
   modeDescription: document.querySelector("#mode-description"),
@@ -60,6 +67,8 @@ const state = {
   muted: false,
   inputTranscript: "",
   outputTranscript: "",
+  ragToken: "",
+  ragFileNames: [],
 };
 
 function populateSelects() {
@@ -90,6 +99,58 @@ function currentSettings() {
     languageB: el.languageB.value,
     voice: el.voice.value,
   };
+}
+
+function loadKnowledgeBase() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RAG_STORAGE_KEY) || "{}");
+    if (typeof saved.token !== "string" || !Array.isArray(saved.files)) return;
+    state.ragToken = saved.token;
+    state.ragFileNames = saved.files.filter((name) => typeof name === "string").slice(0, 100);
+  } catch {
+    localStorage.removeItem(RAG_STORAGE_KEY);
+  }
+}
+
+function saveKnowledgeBase() {
+  if (!state.ragToken) {
+    localStorage.removeItem(RAG_STORAGE_KEY);
+    return;
+  }
+  localStorage.setItem(
+    RAG_STORAGE_KEY,
+    JSON.stringify({ token: state.ragToken, files: state.ragFileNames }),
+  );
+}
+
+function setRagStatus(message, kind = "idle") {
+  el.ragStatus.textContent = message;
+  el.ragStatus.className = `knowledge-state ${kind}`;
+}
+
+function renderKnowledgeBase() {
+  el.ragFileList.replaceChildren();
+  for (const filename of state.ragFileNames) {
+    const chip = document.createElement("span");
+    chip.className = "file-chip";
+    chip.textContent = filename;
+    chip.title = filename;
+    el.ragFileList.append(chip);
+  }
+  el.ragFileList.classList.toggle("hidden", state.ragFileNames.length === 0);
+  el.ragDeleteButton.disabled = !state.ragToken;
+  setRagStatus(
+    state.ragToken ? `已啟用 · ${state.ragFileNames.length} 個檔案` : "尚未上傳檔案",
+    state.ragToken ? "ready" : "idle",
+  );
+}
+
+function setRagControlsBusy(busy) {
+  el.ragFiles.disabled = busy;
+  el.ragUploadButton.disabled = busy;
+  el.ragDeleteButton.disabled = busy || !state.ragToken;
+  el.recordButton.disabled = busy;
+  el.callButton.disabled = busy;
 }
 
 let saveTimer;
@@ -139,6 +200,7 @@ function appendSettings(formData) {
   formData.append("language_a", settings.languageA);
   formData.append("language_b", settings.languageB);
   formData.append("voice", settings.voice);
+  if (state.ragToken) formData.append("rag_token", state.ragToken);
 }
 
 function errorDetail(payload, fallback) {
@@ -163,6 +225,71 @@ async function setMode(mode) {
     ? "持續雙向串流，可自然插話並立即打斷 AI。連線期間修改設定不會生效，請重新連線套用。"
     : "錄一段話後，依序完成語音辨識、文字回覆與語音合成。適合保留清楚的逐輪紀錄。";
   setStatus(realtime ? "Full Duplex 待命" : "Pipeline 待命");
+}
+
+async function uploadKnowledgeFiles() {
+  const files = [...el.ragFiles.files];
+  if (!files.length) {
+    setRagStatus("請先選擇檔案", "error");
+    return;
+  }
+  if (state.pc) stopRealtime();
+  setRagControlsBusy(true);
+  setRagStatus("正在上傳並建立索引…");
+
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file, file.name));
+  if (state.ragToken) formData.append("rag_token", state.ragToken);
+
+  try {
+    const response = await fetch("/api/rag/upload", { method: "POST", body: formData });
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
+
+    state.ragToken = payload.rag_token;
+    state.ragFileNames = [...new Set([...state.ragFileNames, ...payload.files])];
+    saveKnowledgeBase();
+    el.ragFiles.value = "";
+    renderKnowledgeBase();
+  } catch (error) {
+    setRagStatus(`上傳失敗：${error.message}`, "error");
+  } finally {
+    setRagControlsBusy(false);
+  }
+}
+
+async function deleteKnowledgeBase() {
+  if (!state.ragToken) return;
+  if (!window.confirm("要刪除這個知識庫及其 OpenAI 檔案嗎？")) return;
+  if (state.pc) stopRealtime();
+  setRagControlsBusy(true);
+  setRagStatus("正在刪除知識庫…");
+
+  const formData = new FormData();
+  formData.append("rag_token", state.ragToken);
+  try {
+    const response = await fetch("/api/rag/delete", { method: "POST", body: formData });
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
+    state.ragToken = "";
+    state.ragFileNames = [];
+    saveKnowledgeBase();
+    renderKnowledgeBase();
+  } catch (error) {
+    setRagStatus(`刪除失敗：${error.message}`, "error");
+  } finally {
+    setRagControlsBusy(false);
+  }
 }
 
 function preferredMimeType() {
@@ -247,7 +374,53 @@ function showLiveCaption(role, text) {
   el.liveCaption.classList.remove("hidden");
 }
 
-function handleRealtimeEvent(event) {
+async function runRealtimeKnowledgeTools(toolCalls) {
+  setStatus("正在查詢知識庫…", "busy");
+  for (const call of toolCalls) {
+    let output;
+    try {
+      const args = JSON.parse(call.arguments || "{}");
+      const query = typeof args.query === "string" ? args.query.trim() : "";
+      if (!query) throw new Error("Realtime 未提供有效的檢索問題");
+      if (!state.ragToken) throw new Error("知識庫已停用，請重新連線");
+
+      const formData = new FormData();
+      formData.append("query", query);
+      formData.append("rag_token", state.ragToken);
+      const response = await fetch("/api/rag/search", { method: "POST", body: formData });
+      let payload;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
+      output = JSON.stringify(payload);
+    } catch (error) {
+      output = JSON.stringify({ error: error.message, results: [] });
+      setRagStatus(`檢索失敗：${error.message}`, "error");
+    }
+
+    if (state.dataChannel?.readyState !== "open") return;
+    state.dataChannel.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: call.call_id,
+        output,
+      },
+    }));
+  }
+
+  if (state.dataChannel?.readyState === "open") {
+    state.dataChannel.send(JSON.stringify({ type: "response.create" }));
+    if (state.ragToken) {
+      setRagStatus(`已啟用 · ${state.ragFileNames.length} 個檔案`, "ready");
+    }
+  }
+}
+
+async function handleRealtimeEvent(event) {
   const type = event.type || "";
   if (type === "conversation.item.input_audio_transcription.delta") {
     state.inputTranscript += event.delta || "";
@@ -282,6 +455,13 @@ function handleRealtimeEvent(event) {
     return;
   }
   if (type === "response.done") {
+    const toolCalls = (event.response?.output || []).filter(
+      (item) => item.type === "function_call" && item.name === RAG_TOOL_NAME,
+    );
+    if (toolCalls.length) {
+      await runRealtimeKnowledgeTools(toolCalls);
+      return;
+    }
     setStatus("已連線，可直接說話", "ready");
     return;
   }
@@ -311,7 +491,7 @@ async function startRealtime() {
     state.dataChannel.addEventListener("open", () => setStatus("已連線，可直接說話", "ready"));
     state.dataChannel.addEventListener("message", (message) => {
       try {
-        handleRealtimeEvent(JSON.parse(message.data));
+        void handleRealtimeEvent(JSON.parse(message.data));
       } catch {
         // Ignore non-JSON diagnostic messages.
       }
@@ -380,6 +560,8 @@ function initialize() {
   el.languageA.value = settings.languageA;
   el.languageB.value = settings.languageB;
   el.voice.value = settings.voice;
+  loadKnowledgeBase();
+  renderKnowledgeBase();
 
   el.modeButtons.forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
   [el.systemPrompt, el.languageA, el.languageB, el.voice].forEach((input) => input.addEventListener("change", saveSettings));
@@ -393,6 +575,13 @@ function initialize() {
     else startRealtime();
   });
   el.muteButton.addEventListener("click", toggleMute);
+  el.ragUploadButton.addEventListener("click", uploadKnowledgeFiles);
+  el.ragDeleteButton.addEventListener("click", deleteKnowledgeBase);
+  el.ragFiles.addEventListener("change", () => {
+    const count = el.ragFiles.files.length;
+    if (count) setRagStatus(`已選擇 ${count} 個檔案，尚未上傳`);
+    else renderKnowledgeBase();
+  });
   el.clearButton.addEventListener("click", clearConversation);
   el.clearRealtimeButton.addEventListener("click", clearConversation);
   window.addEventListener("beforeunload", () => {
@@ -403,4 +592,3 @@ function initialize() {
 }
 
 initialize();
-

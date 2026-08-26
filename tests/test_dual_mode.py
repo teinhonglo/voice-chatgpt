@@ -2,6 +2,7 @@ import json
 import unittest
 
 from dual_mode.core import (
+    RAG_TOOL_NAME,
     build_instructions,
     build_realtime_session,
     parse_history,
@@ -43,8 +44,24 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(session["audio"]["output"]["voice"], "cedar")
         self.assertEqual(session["audio"]["input"]["transcription"]["language"], "ja")
         self.assertTrue(session["audio"]["input"]["turn_detection"]["interrupt_response"])
+        self.assertNotIn("tools", session)
+
+    def test_rag_policy_and_realtime_tool_are_enabled_together(self):
+        settings = validate_turn_settings("Answer from the docs.", "en", "zh-TW", "marin")
+        session = build_realtime_session(
+            settings,
+            "gpt-realtime-2.1",
+            "gpt-4o-mini-transcribe",
+            rag_enabled=True,
+        )
+
+        self.assertIn("untrusted reference data", session["instructions"])
+        self.assertEqual(session["tools"][0]["name"], RAG_TOOL_NAME)
+        self.assertEqual(session["tool_choice"], "auto")
+        self.assertFalse(
+            session["tools"][0]["parameters"]["additionalProperties"]
+        )
 
 
 if __name__ == "__main__":
     unittest.main()
-

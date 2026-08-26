@@ -56,10 +56,42 @@
         </div>
       </section>
 
+      <section class="knowledge-card" aria-labelledby="knowledge-heading">
+        <div class="section-heading">
+          <div>
+            <p class="step-label">02 / KNOWLEDGE</p>
+            <h2 id="knowledge-heading">RAG 知識庫</h2>
+          </div>
+          <span class="knowledge-state" id="rag-status">尚未上傳檔案</span>
+        </div>
+
+        <div class="upload-row">
+          <label class="file-picker" for="rag-files">
+            <span>選擇知識檔案</span>
+            <input
+              id="rag-files"
+              type="file"
+              multiple
+              accept=".c,.cpp,.cs,.css,.doc,.docx,.go,.html,.java,.js,.json,.md,.pdf,.php,.pptx,.py,.rb,.sh,.tex,.ts,.txt"
+            />
+          </label>
+          <button class="primary-action upload-action" id="rag-upload-button" type="button">
+            上傳並建立索引
+          </button>
+          <button class="secondary-action" id="rag-delete-button" type="button" disabled>
+            清除知識庫
+          </button>
+        </div>
+        <div class="knowledge-files hidden" id="rag-file-list" aria-live="polite"></div>
+        <p class="field-help">
+          可一次上傳最多 10 個檔案；支援 PDF、Word、PowerPoint、Markdown、純文字與常見程式碼格式。完成索引後，Pipeline 與 Full Duplex 會共用同一個知識庫。
+        </p>
+      </section>
+
       <section class="conversation-card" aria-labelledby="conversation-heading">
         <div class="section-heading conversation-heading">
           <div>
-            <p class="step-label">02 / CONVERSATION</p>
+            <p class="step-label">03 / CONVERSATION</p>
             <h2 id="conversation-heading">開始對話</h2>
           </div>
           <div class="connection-state" id="connection-state">
@@ -103,10 +135,9 @@
       </section>
 
       <footer>
-        <p>語音由 AI 生成。請勿在 System prompt 或對話中輸入機密資料。</p>
+        <p>語音由 AI 生成。上傳的檔案會交由 OpenAI 建立檢索索引；請勿上傳未經授權的機密資料。</p>
       </footer>
     </main>
     <script src="/static/app.js" defer></script>
   </body>
 </html>
-
