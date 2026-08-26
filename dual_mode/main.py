@@ -50,6 +50,7 @@ from .local_service import (
 LOGGER = logging.getLogger("voice-chatgpt")
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+DEPLOYMENT_BACKEND = os.getenv("BACKEND", "openai").strip().lower() or "openai"
 
 PIPELINE_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini")
 PIPELINE_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
@@ -578,6 +579,8 @@ async def index() -> FileResponse:
 async def health() -> dict[str, Any]:
     return {
         "ok": True,
+        "backend": DEPLOYMENT_BACKEND,
+        "conda_environment": os.getenv("VOICE_CHATGPT_CONDA_ENV", ""),
         "api_key_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
         "modes": ["pipeline", "realtime", "local-pipeline", "local-realtime"],
         "models": {
