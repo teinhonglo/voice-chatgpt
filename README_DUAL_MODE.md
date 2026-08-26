@@ -34,7 +34,7 @@ BACKEND=openai ./install_conda_envs.sh
 BACKEND=local ./install_conda_envs.sh
 ```
 
-`path.sh` is the only environment-selection entry point. Every startup script sources it and activates one of these environments:
+`path.sh` is the only environment-selection entry point. It uses the fixed Conda executable at `/share/homes/teinhonglo/anaconda3/bin/conda`. Every startup script exports `BACKEND`, sources `path.sh`, and activates one of these environments:
 
 | `BACKEND` | Default Conda environment | Extra startup behavior |
 |---|---|---|
@@ -43,12 +43,14 @@ BACKEND=local ./install_conda_envs.sh
 
 `BACKEND` selects the server environment and dependency bootstrap. It does not remove any of the four homepage modes.
 
-Override the names with `OPENAI_CONDA_ENV` or `LOCAL_CONDA_ENV`. To activate an environment manually:
+To activate an environment manually:
 
 ```bash
-source ./path.sh openai
+export BACKEND=openai
+source ./path.sh
 # or
-source ./path.sh local
+export BACKEND=local
+source ./path.sh
 ```
 
 The installer honors the same overrides, so a customized environment name is used consistently during both installation and startup.
@@ -166,7 +168,8 @@ For a stable hostname, create a remotely managed tunnel and configure its public
 ## Tests
 
 ```bash
-source ./path.sh openai
+export BACKEND=openai
+source ./path.sh
 python -m unittest discover -s tests -p 'test_*.py'
 node --check dual_mode/static/app.js
 ```

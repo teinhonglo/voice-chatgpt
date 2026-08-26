@@ -8,8 +8,9 @@ if [[ "$#" -gt 1 ]]; then
   exit 2
 fi
 
+export BACKEND="${backend}"
 # shellcheck source=path.sh
-source "${project_dir}/path.sh" "${backend}"
+source "${project_dir}/path.sh"
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY before starting the public app}"
 
 if [[ "${BACKEND}" == "local" ]]; then
@@ -22,7 +23,7 @@ if ! command -v cloudflared >/dev/null 2>&1; then
   exit 1
 fi
 
-python_bin="${PYTHON_BIN}"
+python_bin="python"
 bind_host="${PUBLIC_BIND_HOST:-127.0.0.1}"
 port="${PORT:-7860}"
 origin_url="http://${bind_host}:${port}"

@@ -8,8 +8,9 @@ if [[ "$#" -gt 1 ]]; then
   exit 2
 fi
 
+export BACKEND="${backend}"
 # shellcheck source=path.sh
-source "${project_dir}/path.sh" "${backend}"
+source "${project_dir}/path.sh"
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY before starting the app}"
 
 if [[ "${BACKEND}" == "local" ]]; then
@@ -18,6 +19,6 @@ if [[ "${BACKEND}" == "local" ]]; then
 fi
 
 cd "${project_dir}"
-exec "${PYTHON_BIN}" -m uvicorn dual_mode.main:app \
+exec python -m uvicorn dual_mode.main:app \
   --host "${HOST:-0.0.0.0}" \
   --port "${PORT:-7860}"
