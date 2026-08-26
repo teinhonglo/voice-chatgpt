@@ -75,7 +75,7 @@ export OPENAI_API_KEY="sk-..."
 BACKEND=openai ./run.sh
 ```
 
-The script starts the web app and Cloudflare Tunnel together. Copy the public HTTPS URL printed by `cloudflared`.
+The script starts the web app and Cloudflare Tunnel together. Copy the public HTTPS URL printed by `cloudflared`. The tunnel uses HTTP/2 over TCP so it also works on servers that block outbound QUIC/UDP.
 
 ## Run with the Local backend environment (Ollama + Qdrant)
 
@@ -162,6 +162,8 @@ BACKEND=local ./run.sh
 ```
 
 Copy the random `https://...trycloudflare.com` URL printed by `cloudflared`. Quick Tunnels are intended only for testing.
+
+`run.sh` forces Cloudflare Tunnel to use HTTP/2 over TCP. The server firewall must allow outbound TCP port `7844`; no inbound port needs to be opened.
 
 For a stable hostname, create a remotely managed tunnel and configure its public hostname service to point to `http://127.0.0.1:7860` (or your `PUBLIC_BIND_HOST` and `PORT`). Then set `CLOUDFLARE_TUNNEL_TOKEN` and run `./run.sh`. The script passes the token through `TUNNEL_TOKEN`, so it is not exposed as a command-line argument. Protect any public hostname with Cloudflare Access and application-level authentication/rate limits. Anyone who can reach an unprotected URL can consume OpenAI quota, local GPU time, and storage.
 
