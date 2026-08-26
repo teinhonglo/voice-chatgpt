@@ -17,6 +17,21 @@ In both Local modes, uploaded files are parsed by this server and stored only in
 
 The OpenAI API key never goes to the browser.
 
+## Install Cloudflare Tunnel
+
+`run.sh` always creates a public HTTPS URL and therefore requires `cloudflared`. On Ubuntu or Debian, install it from [Cloudflare's official APT repository](https://developers.cloudflare.com/tunnel/downloads/):
+
+```bash
+sudo mkdir -p --mode=0755 /usr/share/keyrings
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" | sudo tee /etc/apt/sources.list.d/cloudflared.list
+sudo apt-get update
+sudo apt-get install cloudflared
+cloudflared --version
+```
+
+The final command must print the installed `cloudflared` version before continuing. A temporary Quick Tunnel does not require a Cloudflare account. A stable hostname requires a Cloudflare account, a named tunnel, and `CLOUDFLARE_TUNNEL_TOKEN` as described below.
+
 ## Install the Conda environments
 
 Miniconda or Anaconda is required. Python 3.11 and all Python packages are declared in `environment.openai.yml` and `environment.local.yml`. Both specifications use `conda-forge` plus `nodefaults`, so unrelated channels configured in a user or system `.condarc` are not queried during installation.
@@ -137,7 +152,7 @@ Copy `.env.example` values into your environment to change them. Set stable `RAG
 
 ## Public HTTPS URL with Cloudflare Tunnel
 
-Install [`cloudflared`](https://developers.cloudflare.com/tunnel/downloads/). `run.sh` uses `BACKEND` to start the matching Conda environment and always creates a public HTTPS tunnel:
+After installing `cloudflared` with the commands above, `run.sh` uses `BACKEND` to start the matching Conda environment and always creates a public HTTPS tunnel:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
