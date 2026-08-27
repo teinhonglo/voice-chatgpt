@@ -23,6 +23,7 @@ const STORAGE_KEY = "voice-chatgpt-dual-mode-settings";
 const CLOUD_RAG_STORAGE_KEY = "voice-chatgpt-dual-mode-rag";
 const LOCAL_RAG_STORAGE_KEY = "voice-chatgpt-local-rag";
 const RAG_TOOL_NAME = "search_knowledge_base";
+const LEGACY_DEFAULT_SYSTEM_PROMPT = "You are a helpful voice assistant. Answer accurately, naturally, and concisely.";
 
 const el = {
   appTitle: document.querySelector("#app-title"),
@@ -116,6 +117,7 @@ function populateSelects() {
 
 function loadSettings() {
   const defaults = {
+    systemPrompt: el.systemPrompt.value.trim(),
     languageA: "zh-TW",
     languageB: "en",
     voice: "marin",
@@ -123,6 +125,7 @@ function loadSettings() {
   };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    if (saved.systemPrompt === LEGACY_DEFAULT_SYSTEM_PROMPT) delete saved.systemPrompt;
     const savedModels = saved.models && typeof saved.models === "object" ? saved.models : {};
     return { ...defaults, ...saved, models: { ...defaults.models, ...savedModels } };
   } catch {

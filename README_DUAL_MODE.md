@@ -94,6 +94,8 @@ Use `BACKEND=local` for the two Local modes. It starts the local dependencies an
 
 Local startup activates `voice-chatgpt-local`, starts Ollama and Qdrant, downloads `qwen3:8b` and `bge-m3` when missing, and starts the web app. Set `SKIP_LOCAL_MODEL_PULL=1` to skip the model check. Model data and Qdrant collections use named Docker volumes, so they survive restarts. Check the three local dependencies at <http://localhost:7860/api/local/health>.
 
+The managed Docker Ollama does not reserve host port `11434`. Docker assigns an available loopback port automatically, and `start_local_services.sh` discovers that mapping and configures the Local LLM and embedding URLs. An existing host Ollama can therefore continue listening on `11434` without conflicting with this project. The selected Docker Ollama endpoint is printed during startup.
+
 `run.sh` parses `--backend`, `--gpuid`, and `--port` through `parse_options.sh`. `--backend` defaults to `openai`, `--gpuid` defaults to `0`, and `--port` defaults to `7860`. The GPU option selects the NVIDIA device assigned to the Local Ollama container. For example:
 
 ```bash
