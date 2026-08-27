@@ -2,15 +2,50 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export BACKEND="${BACKEND:-openai}"
+cd "${project_dir}"
+
+backend="${BACKEND:-openai}"
+gpuid="${GPUID:-0}"
+port="${PORT:-7860}"
+help_message="Usage: $0 [options]
+
+Options:
+  --backend <openai|local>  Backend to expose (default: ${backend})
+  --gpuid <id>              NVIDIA GPU index for Local Ollama (default: ${gpuid})
+  --port <1-65535>          Web server port (default: ${port})
+  --help                    Show this help message"
+
+. ./parse_options.sh
+
+if [[ $# -ne 0 ]]; then
+  echo "$0: unexpected positional arguments: $*" >&2
+  exit 2
+fi
+if [[ "${backend}" != "openai" && "${backend}" != "local" ]]; then
+  echo "$0: --backend must be openai or local." >&2
+  exit 2
+fi
+if [[ ! "${gpuid}" =~ ^[0-9]+$ ]]; then
+  echo "$0: --gpuid must be a non-negative integer." >&2
+  exit 2
+fi
+if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+  echo "$0: --port must be an integer from 1 to 65535." >&2
+  exit 2
+fi
+
+export BACKEND="${backend}"
+export GPUID="${gpuid}"
+export LOCAL_GPU_ID="${gpuid}"
+export PORT="${port}"
 
 # shellcheck source=path.sh
-source "${project_dir}/path.sh"
+source ./path.sh
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY before starting the app}"
 
 if [ "${BACKEND}" == "local" ]; then
   # shellcheck source=start_local_services.sh
-  source "${project_dir}/start_local_services.sh"
+  source ./start_local_services.sh
 fi
 
 if ! command -v cloudflared >/dev/null 2>&1; then
@@ -19,7 +54,6 @@ if ! command -v cloudflared >/dev/null 2>&1; then
 fi
 
 bind_host="${PUBLIC_BIND_HOST:-127.0.0.1}"
-port="${PORT:-7860}"
 origin_url="http://${bind_host}:${port}"
 app_pid=""
 tunnel_pid=""
@@ -36,7 +70,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-cd "${project_dir}"
 PYTHONUNBUFFERED=1 python -m uvicorn dual_mode.main:app \
   --host "${bind_host}" \
   --port "${port}" &

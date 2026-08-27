@@ -11,7 +11,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ["${LOCAL_GPU_ID:-0}"]
               capabilities: [gpu]
 
   qdrant:
