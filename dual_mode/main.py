@@ -44,6 +44,7 @@ from .local_service import (
     encode_local_rag_token,
     generate_local_reply,
     local_health,
+    setup_ollama_model,
     stream_local_reply,
     upload_local_knowledge_files,
 )
@@ -80,6 +81,10 @@ MAX_RAG_FILES_PER_KNOWLEDGE_BASE = int(
 RAG_MAX_RESULTS = int(os.getenv("RAG_MAX_RESULTS", "5"))
 RAG_EXPIRY_DAYS = int(os.getenv("RAG_EXPIRY_DAYS", "7"))
 RAG_INDEX_TIMEOUT_SECONDS = int(os.getenv("RAG_INDEX_TIMEOUT_SECONDS", "120"))
+ENABLE_LOCAL_MODEL_SETUP = os.getenv(
+    "ENABLE_LOCAL_MODEL_SETUP",
+    os.getenv("MANAGE_LOCAL_SERVICES", "1"),
+).strip().lower() not in {"0", "false", "no"}
 
 RAG_MIME_TYPES = {
     ".c": "text/x-c",
@@ -106,8 +111,9 @@ RAG_MIME_TYPES = {
 }
 _VECTOR_STORE_ID_PATTERN = re.compile(r"^vs_[A-Za-z0-9_-]{6,200}$")
 
-app = FastAPI(title="Cloud and Local Voice Chat", version="1.3.0")
+app = FastAPI(title="Cloud and Local Voice Chat", version="1.4.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+_LOCAL_MODEL_SETUP_LOCK = asyncio.Lock()
 
 
 def _api_key() -> str:
@@ -608,6 +614,23 @@ async def _local_duplex_events(
         await asyncio.gather(text_task, audio_task, return_exceptions=True)
 
 
+async def _local_model_setup_events(model: str, already_installed: bool):
+    """Serialize model setup and report Ollama progress as NDJSON."""
+
+    async with _LOCAL_MODEL_SETUP_LOCK:
+        try:
+            async for event in setup_ollama_model(
+                model,
+                already_installed=already_installed,
+            ):
+                yield _ndjson_event(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOGGER.exception("Local model setup failed for %s", model)
+            yield _ndjson_event({"type": "error", "message": str(exc)[:500]})
+
+
 def _safe_upstream_detail(response: httpx.Response) -> str:
     try:
         payload = response.json()
@@ -727,9 +750,38 @@ async def model_catalog() -> dict[str, Any]:
         "local": {
             "installed": sorted(set(installed_local_models)),
             "recommended": list(LOCAL_RECOMMENDED_MODELS),
+            "setup_enabled": ENABLE_LOCAL_MODEL_SETUP,
         },
         "warnings": warnings,
     }
+
+
+@app.post("/api/local/models/setup")
+async def local_model_setup(model: str = Form(...)) -> StreamingResponse:
+    """Download an approved Ollama model and preload it for local inference."""
+
+    _require_backend("local")
+    if not ENABLE_LOCAL_MODEL_SETUP:
+        raise HTTPException(status_code=404, detail="Local model setup is disabled")
+    model_id = _model_id(model, LOCAL_LLM_MODEL)
+    try:
+        installed = set(await _installed_local_models())
+    except Exception as exc:
+        LOGGER.exception("Could not query Ollama before model setup")
+        raise HTTPException(status_code=502, detail="Ollama is not available") from exc
+
+    approved = {item["id"] for item in LOCAL_RECOMMENDED_MODELS}
+    approved.add(LOCAL_LLM_MODEL)
+    if model_id not in approved and model_id not in installed:
+        raise HTTPException(status_code=403, detail="This model is not approved for browser download")
+    if _LOCAL_MODEL_SETUP_LOCK.locked():
+        raise HTTPException(status_code=409, detail="Another model is currently being configured")
+
+    return StreamingResponse(
+        _local_model_setup_events(model_id, model_id in installed),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/local/health")

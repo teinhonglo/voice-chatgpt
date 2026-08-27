@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 from typing import Any, AsyncIterator, Iterable
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 from xml.etree import ElementTree
 from zipfile import ZipFile
@@ -26,6 +27,25 @@ from .core import TurnSettings, build_instructions
 LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
 LOCAL_LLM_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "local")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen3:8b")
+
+
+def ollama_native_base_url(openai_base_url: str) -> str:
+    """Derive Ollama's native API root from its OpenAI-compatible /v1 URL."""
+
+    parsed = urlsplit(openai_base_url.strip().rstrip("/"))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("LOCAL_LLM_BASE_URL must be an HTTP(S) URL")
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", "")).rstrip("/")
+
+
+OLLAMA_BASE_URL = os.getenv(
+    "OLLAMA_BASE_URL",
+    ollama_native_base_url(LOCAL_LLM_BASE_URL),
+).rstrip("/")
+LOCAL_MODEL_KEEP_ALIVE = os.getenv("LOCAL_MODEL_KEEP_ALIVE", "30m").strip() or "30m"
 LOCAL_EMBEDDING_BASE_URL = os.getenv(
     "LOCAL_EMBEDDING_BASE_URL", LOCAL_LLM_BASE_URL
 ).rstrip("/")
@@ -195,6 +215,75 @@ def _llm_client() -> Any:
     from openai import OpenAI
 
     return OpenAI(base_url=LOCAL_LLM_BASE_URL, api_key=LOCAL_LLM_API_KEY)
+
+
+async def setup_ollama_model(
+    model: str,
+    *,
+    already_installed: bool,
+) -> AsyncIterator[dict[str, Any]]:
+    """Pull an Ollama model when needed, then preload it for immediate inference."""
+
+    import httpx
+
+    timeout = httpx.Timeout(connect=10.0, read=None, write=60.0, pool=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        if not already_installed:
+            yield {"type": "phase", "phase": "download", "message": "正在下載模型…"}
+            async with client.stream(
+                "POST",
+                f"{OLLAMA_BASE_URL}/api/pull",
+                json={"model": model, "stream": True},
+            ) as response:
+                if response.is_error:
+                    detail = (await response.aread()).decode("utf-8", errors="replace")[:500]
+                    raise RuntimeError(detail or f"Ollama pull failed with HTTP {response.status_code}")
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(payload.get("error"), str):
+                        raise RuntimeError(payload["error"])
+                    completed = payload.get("completed")
+                    total = payload.get("total")
+                    event: dict[str, Any] = {
+                        "type": "progress",
+                        "status": str(payload.get("status", "正在下載模型…")),
+                    }
+                    if isinstance(completed, int) and isinstance(total, int) and total > 0:
+                        event.update(
+                            {
+                                "completed": completed,
+                                "total": total,
+                                "percent": round(min(max(completed / total, 0.0), 1.0) * 100, 1),
+                            }
+                        )
+                    yield event
+
+        yield {"type": "phase", "phase": "load", "message": "正在載入模型…"}
+        response = await client.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": model,
+                "stream": False,
+                "keep_alive": LOCAL_MODEL_KEEP_ALIVE,
+            },
+        )
+        if response.is_error:
+            detail = response.text[:500]
+            raise RuntimeError(detail or f"Ollama load failed with HTTP {response.status_code}")
+        payload = response.json()
+        if isinstance(payload.get("error"), str):
+            raise RuntimeError(payload["error"])
+        yield {
+            "type": "ready",
+            "model": model,
+            "message": f"{model} 已載入" if already_installed else f"{model} 已下載並載入",
+            "keep_alive": LOCAL_MODEL_KEEP_ALIVE,
+        }
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
