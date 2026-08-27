@@ -1,7 +1,10 @@
 import json
+from pathlib import Path
+import re
 import unittest
 
 from dual_mode.core import (
+    DEFAULT_SYSTEM_PROMPT,
     RAG_TOOL_NAME,
     build_instructions,
     build_realtime_session,
@@ -24,6 +27,20 @@ from dual_mode.model_catalog import (
 
 
 class CoreTests(unittest.TestCase):
+    def test_default_tutor_prompt_matches_the_frontend(self):
+        settings = validate_turn_settings("", "en", "en", "marin")
+        index_html = Path("dual_mode/static/index.html").read_text(encoding="utf-8")
+        match = re.search(
+            r'<textarea id="system-prompt" rows="4">(.*?)</textarea>',
+            index_html,
+            flags=re.DOTALL,
+        )
+
+        self.assertIsNotNone(match)
+        self.assertEqual(settings.system_prompt, DEFAULT_SYSTEM_PROMPT)
+        self.assertEqual(match.group(1).strip(), DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("Only ask one question at a time.", DEFAULT_SYSTEM_PROMPT)
+
     def test_normalizes_settings_and_enforces_language_policy(self):
         settings = validate_turn_settings("Be brief.", "zh_tw", "EN", "MARIN")
 
