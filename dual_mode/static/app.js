@@ -31,7 +31,6 @@ const el = {
   modeSwitch: document.querySelector("#mode-switch"),
   modeButtons: [...document.querySelectorAll(".mode-button")],
   systemPrompt: document.querySelector("#system-prompt"),
-  promptEnhanceButton: document.querySelector("#prompt-enhance-button"),
   promptSaveButton: document.querySelector("#prompt-save-button"),
   promptHelp: document.querySelector("#prompt-help"),
   llmModel: document.querySelector("#llm-model"),
@@ -86,7 +85,6 @@ const state = {
   modelCatalog: null,
   modelSelections: { text: "", realtime: "", local: "" },
   modelSetupInProgress: false,
-  promptEnhancing: false,
   promptDirty: false,
   savedPrompt: "",
   knowledge: {
@@ -197,68 +195,6 @@ function savePromptDefault() {
   setPromptHelp("目前內容已存成這個瀏覽器的預設 Prompt。", "success");
 }
 
-function setPromptEnhancing(busy) {
-  state.promptEnhancing = busy;
-  el.systemPrompt.readOnly = busy;
-  el.promptEnhanceButton.disabled = busy || !el.llmModel.value;
-  el.promptSaveButton.disabled = busy;
-  el.llmModel.disabled = busy || !el.llmModel.value;
-  el.modeButtons.forEach((button) => { button.disabled = busy; });
-  el.recordButton.disabled = busy;
-  el.callButton.disabled = busy;
-  el.promptEnhanceButton.textContent = busy ? "Enhancing…" : "Enhanced";
-}
-
-async function enhancePrompt() {
-  const prompt = el.systemPrompt.value.trim();
-  const model = el.llmModel.value;
-  if (!prompt) {
-    setPromptHelp("System Prompt 不可為空白。", "error");
-    return;
-  }
-  if (prompt.length > 12_000) {
-    setPromptHelp("System Prompt 不可超過 12,000 個字元。", "error");
-    return;
-  }
-  if (!model) {
-    setPromptHelp("請先選擇 LLM。", "error");
-    return;
-  }
-  if (state.pc || state.recorder?.state === "recording") {
-    setPromptHelp("請先結束目前的錄音或 Full Duplex 連線。", "error");
-    return;
-  }
-
-  stopLocalTurn();
-  setPromptEnhancing(true);
-  setPromptHelp(`正在依 ${model} 與目前模式改善 Prompt…`);
-  const formData = new FormData();
-  formData.append("prompt", prompt);
-  formData.append("llm_model", model);
-  formData.append("mode", state.mode);
-
-  try {
-    const response = await fetch("/api/prompt/enhance", { method: "POST", body: formData });
-    let payload;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = null;
-    }
-    if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
-    if (!payload?.prompt) throw new Error("後端沒有回傳 Enhanced Prompt");
-
-    el.systemPrompt.value = payload.prompt;
-    markPromptDirty(
-      `已針對 ${payload.target_model || model} 完成改善。請先確認內容，再按 Save Prompt 設為預設值。`,
-    );
-  } catch (error) {
-    setPromptHelp(`Prompt 改善失敗：${error.message}`, "error");
-  } finally {
-    setPromptEnhancing(false);
-  }
-}
-
 function localRecommendation(modelId) {
   return state.modelCatalog?.local?.recommended?.find((item) => item.id === modelId) || null;
 }
@@ -350,7 +286,6 @@ function renderModelSelect() {
   el.llmModel.value = desired || el.llmModel.options[0]?.value || "";
   state.modelSelections[kind] = el.llmModel.value;
   el.llmModel.disabled = !el.llmModel.value;
-  el.promptEnhanceButton.disabled = state.promptEnhancing || !el.llmModel.value;
   renderModelHelp();
 }
 
@@ -391,7 +326,6 @@ function setModelSetupBusy(busy) {
   state.modelSetupInProgress = busy;
   el.llmModel.disabled = busy || !el.llmModel.value;
   el.modelSetupButton.disabled = busy || !el.llmModel.value;
-  el.promptEnhanceButton.disabled = busy || !el.llmModel.value;
   el.promptSaveButton.disabled = busy;
   el.modeButtons.forEach((button) => { button.disabled = busy; });
   el.recordButton.disabled = busy;
@@ -549,7 +483,6 @@ function setRagControlsBusy(busy) {
   el.ragDeleteButton.disabled = busy || !activeKnowledge().token;
   el.recordButton.disabled = busy;
   el.callButton.disabled = busy;
-  el.promptEnhanceButton.disabled = busy || !el.llmModel.value;
   el.promptSaveButton.disabled = busy;
 }
 
@@ -767,7 +700,6 @@ function stopRecording() {
 async function sendPipelineTurn(blob) {
   el.modeButtons.forEach((button) => { button.disabled = true; });
   el.recordButton.disabled = true;
-  el.promptEnhanceButton.disabled = true;
   el.promptSaveButton.disabled = true;
   el.ragFiles.disabled = true;
   el.ragUploadButton.disabled = true;
@@ -806,7 +738,6 @@ async function sendPipelineTurn(blob) {
   } finally {
     el.modeButtons.forEach((button) => { button.disabled = false; });
     el.recordButton.disabled = false;
-    el.promptEnhanceButton.disabled = !el.llmModel.value;
     el.promptSaveButton.disabled = false;
     el.ragFiles.disabled = false;
     el.ragUploadButton.disabled = false;
@@ -1032,7 +963,6 @@ async function handleRealtimeEvent(event) {
 async function startRealtime() {
   const local = state.mode === "local-realtime";
   el.callButton.disabled = true;
-  el.promptEnhanceButton.disabled = true;
   el.promptSaveButton.disabled = true;
   el.modeButtons.forEach((button) => { button.disabled = true; });
   setStatus("正在建立安全連線…", "busy");
@@ -1091,7 +1021,6 @@ async function startRealtime() {
     setStatus(`連線失敗：${error.message}`, "error");
   } finally {
     el.callButton.disabled = false;
-    el.promptEnhanceButton.disabled = !el.llmModel.value;
     el.promptSaveButton.disabled = false;
     el.modeButtons.forEach((button) => { button.disabled = false; });
   }
@@ -1148,7 +1077,6 @@ function initialize() {
     saveSettings();
   });
   el.modelSetupButton.addEventListener("click", setupLocalModel);
-  el.promptEnhanceButton.addEventListener("click", enhancePrompt);
   el.promptSaveButton.addEventListener("click", savePromptDefault);
   el.systemPrompt.addEventListener("input", () => markPromptDirty());
   el.recordButton.addEventListener("click", () => {
