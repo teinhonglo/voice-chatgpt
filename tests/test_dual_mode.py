@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
 import re
+import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from dual_mode.core import (
     DEFAULT_SYSTEM_PROMPT,
@@ -17,6 +20,8 @@ from dual_mode.local_service import (
     collection_name,
     decode_local_rag_token,
     encode_local_rag_token,
+    ollama_native_base_url,
+    setup_ollama_model,
 )
 from dual_mode.model_catalog import (
     choose_default,
@@ -150,6 +155,96 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(validate_model_id("qwen3:14b", "qwen3:8b"), "qwen3:14b")
         with self.assertRaises(ValueError):
             validate_model_id("../../bad model", "qwen3:8b")
+
+    def test_ollama_native_api_uses_the_dynamic_openai_compatible_port(self):
+        self.assertEqual(
+            ollama_native_base_url("http://127.0.0.1:32781/v1"),
+            "http://127.0.0.1:32781",
+        )
+        self.assertEqual(
+            ollama_native_base_url("https://models.example.test/ollama/v1/"),
+            "https://models.example.test/ollama",
+        )
+        with self.assertRaises(ValueError):
+            ollama_native_base_url("not-a-url")
+
+    def test_frontend_exposes_local_model_setup_controls(self):
+        index_html = Path("dual_mode/static/index.html").read_text(encoding="utf-8")
+        app_js = Path("dual_mode/static/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="model-setup-button"', index_html)
+        self.assertIn('id="model-progress"', index_html)
+        self.assertIn('fetch("/api/local/models/setup"', app_js)
+
+
+class _FakeOllamaResponse:
+    is_error = False
+    status_code = 200
+    text = ""
+
+    async def aread(self):
+        return b""
+
+    async def aiter_lines(self):
+        yield json.dumps({"status": "pulling manifest"})
+        yield json.dumps({"status": "downloading", "completed": 50, "total": 100})
+        yield json.dumps({"status": "success"})
+
+    def json(self):
+        return {"done": True}
+
+
+class _FakeOllamaStream:
+    async def __aenter__(self):
+        return _FakeOllamaResponse()
+
+    async def __aexit__(self, _exc_type, _exc, _traceback):
+        return False
+
+
+class _FakeOllamaClient:
+    def __init__(self):
+        self.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _traceback):
+        return False
+
+    def stream(self, method, url, json):
+        self.calls.append((method, url, json))
+        return _FakeOllamaStream()
+
+    async def post(self, url, json):
+        self.calls.append(("POST", url, json))
+        return _FakeOllamaResponse()
+
+
+class LocalModelSetupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_setup_streams_pull_progress_then_preloads_model(self):
+        client = _FakeOllamaClient()
+        fake_httpx = SimpleNamespace(
+            AsyncClient=lambda **_kwargs: client,
+            Timeout=lambda **_kwargs: object(),
+        )
+        with patch.dict(sys.modules, {"httpx": fake_httpx}):
+            events = [
+                event
+                async for event in setup_ollama_model(
+                    "qwen3:14b",
+                    already_installed=False,
+                )
+            ]
+
+        self.assertEqual(events[0]["phase"], "download")
+        self.assertEqual(events[2]["percent"], 50.0)
+        self.assertEqual(events[-2]["phase"], "load")
+        self.assertEqual(events[-1]["type"], "ready")
+        self.assertTrue(client.calls[0][1].endswith("/api/pull"))
+        self.assertTrue(client.calls[-1][1].endswith("/api/generate"))
+        self.assertNotIn("prompt", client.calls[-1][2])
+        self.assertEqual(client.calls[-1][2]["keep_alive"], "30m")
 
 
 if __name__ == "__main__":

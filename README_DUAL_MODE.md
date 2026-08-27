@@ -129,13 +129,22 @@ The Local selector also recommends these popular quantized Ollama models whose p
 | [`gemma3:12b`](https://ollama.com/library/gemma3:12b) | 8.1 GB | multilingual general model |
 | [`deepseek-r1:14b`](https://ollama.com/library/deepseek-r1:14b) | 9.0 GB | reasoning model, higher latency |
 
-Only `qwen3:8b` is downloaded automatically, so normal installation remains small. Before choosing another recommended model, install it on the server. For example:
+Only `qwen3:8b` is downloaded during startup, so normal installation remains small. In a Local deployment, select a recommended model and click **設定模型**. The page then:
+
+1. streams the Ollama download progress;
+2. refreshes the installed-model catalog;
+3. sends an empty Ollama generation request to preload the selected model;
+4. keeps the model ready for 30 minutes by default.
+
+The browser setup endpoint accepts only the configured default, the models already installed on the server, and the five RTX 3090 recommendations listed above. It cannot be used to pull an arbitrary model name.
+
+To retain the manual workflow, or when browser model setup is disabled, run:
 
 ```bash
 docker compose -f docker-compose.local.yml exec ollama ollama pull qwen3:14b
 ```
 
-Refresh the page after the download. The model then appears under **已安裝**. Actual VRAM use also depends on context length and concurrent requests; the application does not select the 19–20 GB Qwen variants by default because their remaining VRAM margin is much smaller.
+Refresh the page after a manual download. The model then appears under **已安裝**. Actual VRAM use also depends on context length and concurrent requests; the application does not select the 19–20 GB Qwen variants by default because their remaining VRAM margin is much smaller.
 
 For a CPU-only machine, remove the `deploy.resources.reservations.devices` block from `docker-compose.local.yml`. Generation will be much slower.
 
@@ -163,7 +172,7 @@ export MANAGE_LOCAL_SERVICES=0
 ./run.sh --backend local --gpuid 0 --port 7860
 ```
 
-`MANAGE_LOCAL_SERVICES=0` prevents the startup script from launching Docker or pulling Ollama models. The frontend reads models reported by the configured endpoint; the RTX 3090 recommendation list is used only as a convenience. `.env.example` lists every override.
+`MANAGE_LOCAL_SERVICES=0` prevents the startup script from launching Docker or pulling Ollama models and disables the browser **設定模型** button by default. This is appropriate for vLLM and other non-Ollama endpoints. Set `ENABLE_LOCAL_MODEL_SETUP=1` only when the configured endpoint is Ollama and its native API is reachable. The frontend reads models reported by the configured endpoint; the RTX 3090 recommendation list is used only as a convenience. `.env.example` lists every override.
 
 ## RAG file upload
 
@@ -213,6 +222,7 @@ For a stable hostname, create a remotely managed tunnel and configure its public
 ## API summary
 
 - `GET /api/models`: mode-compatible OpenAI choices, installed Local models, and RTX 3090 recommendations.
+- `POST /api/local/models/setup`: stream an approved Ollama model download and preload it for Local inference.
 - `POST /api/pipeline/turn`: OpenAI Pipeline turn.
 - `POST /api/realtime/session`: OpenAI end-to-end Realtime WebRTC SDP exchange.
 - `POST /api/local/pipeline/turn`: OpenAI ASR/TTS with local RAG and LLM.

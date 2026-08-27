@@ -31,6 +31,9 @@ const el = {
   modeButtons: [...document.querySelectorAll(".mode-button")],
   systemPrompt: document.querySelector("#system-prompt"),
   llmModel: document.querySelector("#llm-model"),
+  modelSetupButton: document.querySelector("#model-setup-button"),
+  modelProgress: document.querySelector("#model-progress"),
+  modelProgressBar: document.querySelector("#model-progress-bar"),
   modelHelp: document.querySelector("#model-help"),
   languageA: document.querySelector("#language-a"),
   languageB: document.querySelector("#language-b"),
@@ -78,6 +81,7 @@ const state = {
   outputTranscript: "",
   modelCatalog: null,
   modelSelections: { text: "", realtime: "", local: "" },
+  modelSetupInProgress: false,
   knowledge: {
     cloud: { token: "", files: [] },
     local: { token: "", files: [] },
@@ -147,11 +151,23 @@ function localRecommendation(modelId) {
   return state.modelCatalog?.local?.recommended?.find((item) => item.id === modelId) || null;
 }
 
+function renderModelSetupControls() {
+  const visible = activeModelKind() === "local" && Boolean(state.modelCatalog?.local?.setup_enabled);
+  el.modelSetupButton.classList.toggle("hidden", !visible);
+  el.modelSetupButton.disabled = !visible || !el.llmModel.value || state.modelSetupInProgress;
+  if (!state.modelSetupInProgress) {
+    el.modelProgress.classList.add("hidden");
+    el.modelProgressBar.style.width = "0%";
+    el.modelProgress.setAttribute("aria-valuenow", "0");
+  }
+}
+
 function renderModelHelp() {
   if (!state.modelCatalog) return;
   const kind = activeModelKind();
   const selected = el.llmModel.value;
   if (kind !== "local") {
+    renderModelSetupControls();
     const warning = state.modelCatalog.warnings?.find((message) => message.startsWith("OpenAI"));
     el.modelHelp.textContent = warning
       ? "無法自動取得 OpenAI 清單，目前使用後端預設模型。"
@@ -163,13 +179,20 @@ function renderModelHelp() {
 
   const installed = new Set(state.modelCatalog.local?.installed || []);
   const recommendation = localRecommendation(selected);
+  const setupEnabled = Boolean(state.modelCatalog.local?.setup_enabled);
+  renderModelSetupControls();
   if (installed.has(selected)) {
-    el.modelHelp.textContent = recommendation
+    const description = recommendation
       ? `已安裝 · ${recommendation.label} · ${recommendation.size} · ${recommendation.note}`
       : "此模型已安裝在目前的 Local LLM 服務。";
+    el.modelHelp.textContent = setupEnabled
+      ? `${description} · 按「設定模型」可立即載入。`
+      : description;
     return;
   }
-  el.modelHelp.textContent = `尚未安裝。請先在伺服器執行：docker compose -f docker-compose.local.yml exec ollama ollama pull ${selected}`;
+  el.modelHelp.textContent = setupEnabled
+    ? "尚未安裝。按「設定模型」後會自動下載並載入；下載期間請勿關閉頁面。"
+    : `尚未安裝。請先在伺服器執行：docker compose -f docker-compose.local.yml exec ollama ollama pull ${selected}`;
 }
 
 function renderModelSelect() {
@@ -218,25 +241,121 @@ function renderModelSelect() {
   renderModelHelp();
 }
 
-async function loadModelCatalog() {
+async function loadModelCatalog(applyBackend = true) {
   try {
     const response = await fetch("/api/models", { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
     state.modelCatalog = payload;
   } catch (error) {
+    if (!applyBackend && state.modelCatalog) {
+      el.modelHelp.textContent = `模型已設定，但清單重新整理失敗：${error.message}`;
+      return;
+    }
     state.modelCatalog = {
       backend: "openai",
       modes: ["pipeline", "realtime"],
       defaults: { text: "gpt-5.6-luna", realtime: "gpt-realtime-2", local: "qwen3:8b" },
       openai: { text: ["gpt-5.6-luna"], realtime: ["gpt-realtime-2"] },
-      local: { installed: [], recommended: [{ id: "qwen3:8b", label: "Qwen 3 8B", size: "5.2 GB", note: "預設" }] },
+      local: { installed: [], recommended: [{ id: "qwen3:8b", label: "Qwen 3 8B", size: "5.2 GB", note: "預設" }], setup_enabled: false },
       warnings: ["OpenAI model list could not be loaded; using the configured defaults."],
     };
     el.modelHelp.textContent = `模型清單載入失敗：${error.message}`;
   }
-  applyDeploymentBackend(state.modelCatalog.backend, state.modelCatalog.modes);
+  if (applyBackend) applyDeploymentBackend(state.modelCatalog.backend, state.modelCatalog.modes);
   renderModelSelect();
+}
+
+function setModelProgress(percent, message) {
+  const normalized = Math.min(Math.max(Number(percent) || 0, 0), 100);
+  el.modelProgress.classList.remove("hidden");
+  el.modelProgressBar.style.width = `${normalized}%`;
+  el.modelProgress.setAttribute("aria-valuenow", String(Math.round(normalized)));
+  if (message) el.modelHelp.textContent = message;
+}
+
+function setModelSetupBusy(busy) {
+  state.modelSetupInProgress = busy;
+  el.llmModel.disabled = busy || !el.llmModel.value;
+  el.modelSetupButton.disabled = busy || !el.llmModel.value;
+  el.modeButtons.forEach((button) => { button.disabled = busy; });
+  el.recordButton.disabled = busy;
+  el.callButton.disabled = busy;
+  if (busy) {
+    el.modelSetupButton.textContent = "設定中…";
+    setModelProgress(2, "正在連線到 Ollama…");
+  } else {
+    el.modelSetupButton.textContent = "設定模型";
+    renderModelSetupControls();
+  }
+}
+
+async function setupLocalModel() {
+  if (activeModelKind() !== "local" || !el.llmModel.value) return;
+  if (state.pc || state.recorder?.state === "recording") {
+    el.modelHelp.textContent = "請先結束目前的錄音或 Full Duplex 連線，再設定模型。";
+    return;
+  }
+
+  stopLocalTurn();
+  const model = el.llmModel.value;
+  state.modelSelections.local = model;
+  saveSettings();
+  setModelSetupBusy(true);
+  const formData = new FormData();
+  formData.append("model", model);
+  let readyMessage = "";
+
+  try {
+    const response = await fetch("/api/local/models/setup", { method: "POST", body: formData });
+    if (!response.ok) {
+      let payload;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      throw new Error(errorDetail(payload, `HTTP ${response.status}`));
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "phase" && event.phase === "download") {
+          setModelProgress(2, event.message || `正在下載 ${model}…`);
+        } else if (event.type === "progress") {
+          const percent = Number.isFinite(event.percent) ? event.percent : 5;
+          const suffix = Number.isFinite(event.percent) ? ` ${event.percent.toFixed(1)}%` : "";
+          setModelProgress(percent, `${event.status || "正在下載模型…"}${suffix}`);
+        } else if (event.type === "phase" && event.phase === "load") {
+          setModelProgress(100, event.message || `正在載入 ${model}…`);
+        } else if (event.type === "ready") {
+          readyMessage = event.message || `${model} 已載入`;
+        } else if (event.type === "error") {
+          throw new Error(event.message || "模型設定失敗");
+        }
+      }
+      if (done) break;
+    }
+    if (!readyMessage) throw new Error("Ollama 未回報模型設定完成");
+
+    state.modelSetupInProgress = false;
+    await loadModelCatalog(false);
+    setStatus(isRealtimeMode() ? "Local Full Duplex 待命" : "Local Pipeline 待命", "ready");
+    el.modelHelp.textContent = `${readyMessage}，現在可以開始對話。`;
+  } catch (error) {
+    el.modelHelp.textContent = `模型設定失敗：${error.message}`;
+  } finally {
+    setModelSetupBusy(false);
+  }
 }
 
 function applyDeploymentBackend(backend, modes) {
@@ -900,6 +1019,7 @@ function initialize() {
     renderModelHelp();
     saveSettings();
   });
+  el.modelSetupButton.addEventListener("click", setupLocalModel);
   el.systemPrompt.addEventListener("input", saveSettings);
   el.recordButton.addEventListener("click", () => {
     if (state.recorder?.state === "recording") stopRecording();
