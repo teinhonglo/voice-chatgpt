@@ -103,6 +103,13 @@ h2 { margin-bottom: 0; font-size: 1.2rem; letter-spacing: -0.02em; }
 .field { display: grid; gap: 8px; min-width: 0; }
 .field > span, .field > label { color: #262626; font-size: 0.82rem; font-weight: 700; }
 .field-wide { margin-bottom: 18px; }
+.prompt-heading-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.prompt-heading-row > label { color: #262626; font-size: 0.82rem; font-weight: 700; }
+.prompt-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.compact-action { min-height: 36px; padding: 0 12px; border-radius: 10px; font-size: 0.78rem; font-weight: 750; }
+.prompt-help { color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
+.prompt-help.success { color: var(--success); }
+.prompt-help.error { color: var(--danger); }
 .model-help { color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
 .model-control-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .model-setup-button { min-width: 138px; }
@@ -253,6 +260,8 @@ footer p { margin-bottom: 0; }
   .upload-row { grid-template-columns: 1fr; }
   .file-picker { grid-column: auto; }
   .model-control-row { grid-template-columns: 1fr; }
+  .prompt-heading-row { align-items: flex-start; flex-direction: column; }
+  .prompt-actions { justify-content: flex-start; width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

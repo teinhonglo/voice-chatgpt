@@ -138,6 +138,16 @@ Only `qwen3:8b` is downloaded during startup, so normal installation remains sma
 
 The browser setup endpoint accepts only the configured default, the models already installed on the server, and the five RTX 3090 recommendations listed above. It cannot be used to pull an arbitrary model name.
 
+### Improve and save the System prompt
+
+The two prompt buttons are available in every mode:
+
+- **Enhanced** sends the current draft, selected mode, and selected target model to the backend. In an OpenAI deployment, `OPENAI_PROMPT_ENHANCER_MODEL` rewrites the prompt for the selected Responses or Realtime target model. In a Local deployment, the selected Local model performs the rewrite itself.
+- The enhanced result replaces the text in the textarea but is not saved automatically, so it can be reviewed or edited first.
+- **Save Prompt** stores the current textarea as the default for the current browser and site origin. It does not write a server-wide file and does not let one visitor change another visitor's default.
+
+The application adds Language A, Language B, voice, RAG, and tool policies separately, so prompt enhancement is instructed not to duplicate or override those settings. The OpenAI API key remains on the server.
+
 To retain the manual workflow, or when browser model setup is disabled, run:
 
 ```bash
@@ -223,6 +233,7 @@ For a stable hostname, create a remotely managed tunnel and configure its public
 
 - `GET /api/models`: mode-compatible OpenAI choices, installed Local models, and RTX 3090 recommendations.
 - `POST /api/local/models/setup`: stream an approved Ollama model download and preload it for Local inference.
+- `POST /api/prompt/enhance`: rewrite the current prompt for the selected backend, mode, and model.
 - `POST /api/pipeline/turn`: OpenAI Pipeline turn.
 - `POST /api/realtime/session`: OpenAI end-to-end Realtime WebRTC SDP exchange.
 - `POST /api/local/pipeline/turn`: OpenAI ASR/TTS with local RAG and LLM.

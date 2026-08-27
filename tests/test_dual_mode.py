@@ -10,8 +10,10 @@ from dual_mode.core import (
     DEFAULT_SYSTEM_PROMPT,
     RAG_TOOL_NAME,
     build_instructions,
+    build_prompt_enhancement_instructions,
     build_realtime_session,
     build_realtime_transcription_session,
+    clean_enhanced_prompt,
     parse_history,
     validate_turn_settings,
 )
@@ -156,6 +158,28 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_model_id("../../bad model", "qwen3:8b")
 
+    def test_prompt_enhancement_targets_the_selected_model_and_mode(self):
+        instructions = build_prompt_enhancement_instructions(
+            "gpt-realtime-2",
+            "realtime",
+            "openai",
+        )
+
+        self.assertIn("Target model: gpt-realtime-2", instructions)
+        self.assertIn("Realtime speech-to-speech", instructions)
+        self.assertIn("Do not add Language A", instructions)
+        with self.assertRaises(ValueError):
+            build_prompt_enhancement_instructions("gpt-test", "unknown", "openai")
+
+    def test_prompt_enhancement_removes_model_wrappers(self):
+        enhanced = clean_enhanced_prompt(
+            "<think>internal analysis</think>\n```markdown\n# Tutor\nAsk one question.\n```"
+        )
+
+        self.assertEqual(enhanced, "# Tutor\nAsk one question.")
+        with self.assertRaises(ValueError):
+            clean_enhanced_prompt("<think>nothing else</think>")
+
     def test_ollama_native_api_uses_the_dynamic_openai_compatible_port(self):
         self.assertEqual(
             ollama_native_base_url("http://127.0.0.1:32781/v1"),
@@ -168,13 +192,17 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ollama_native_base_url("not-a-url")
 
-    def test_frontend_exposes_local_model_setup_controls(self):
+    def test_frontend_exposes_model_and_prompt_controls(self):
         index_html = Path("dual_mode/static/index.html").read_text(encoding="utf-8")
         app_js = Path("dual_mode/static/app.js").read_text(encoding="utf-8")
 
         self.assertIn('id="model-setup-button"', index_html)
         self.assertIn('id="model-progress"', index_html)
         self.assertIn('fetch("/api/local/models/setup"', app_js)
+        self.assertIn('id="prompt-enhance-button"', index_html)
+        self.assertIn('id="prompt-save-button"', index_html)
+        self.assertIn('fetch("/api/prompt/enhance"', app_js)
+        self.assertIn("PROMPT_DEFAULT_STORAGE_KEY", app_js)
 
 
 class _FakeOllamaResponse:
