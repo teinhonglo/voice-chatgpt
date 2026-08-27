@@ -26,6 +26,16 @@ fi
 
 docker compose -f "${compose_file}" up -d
 
+ollama_host_binding="$(
+  docker compose -f "${compose_file}" port ollama 11434 2>/dev/null | head -n 1
+)"
+if [[ ! "${ollama_host_binding}" =~ ^127\.0\.0\.1:([0-9]+)$ ]]; then
+  echo "Could not determine the Docker Ollama host port: ${ollama_host_binding:-no mapping returned}." >&2
+  return 1 2>/dev/null || exit 1
+fi
+ollama_host_port="${BASH_REMATCH[1]}"
+managed_ollama_base_url="http://127.0.0.1:${ollama_host_port}/v1"
+
 ollama_ready=0
 for _ in $(seq 1 45); do
   if docker compose -f "${compose_file}" exec -T ollama ollama list >/dev/null 2>&1; then
@@ -49,6 +59,7 @@ if [[ "${SKIP_LOCAL_MODEL_PULL:-0}" != "1" ]]; then
   fi
 fi
 
-export LOCAL_LLM_BASE_URL="${LOCAL_LLM_BASE_URL:-http://127.0.0.1:11434/v1}"
-export LOCAL_EMBEDDING_BASE_URL="${LOCAL_EMBEDDING_BASE_URL:-http://127.0.0.1:11434/v1}"
+export LOCAL_LLM_BASE_URL="${LOCAL_LLM_BASE_URL:-${managed_ollama_base_url}}"
+export LOCAL_EMBEDDING_BASE_URL="${LOCAL_EMBEDDING_BASE_URL:-${managed_ollama_base_url}}"
 export QDRANT_URL="${QDRANT_URL:-http://127.0.0.1:6333}"
+echo "Docker Ollama is available at ${managed_ollama_base_url}."
