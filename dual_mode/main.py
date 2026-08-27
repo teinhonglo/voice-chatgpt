@@ -26,8 +26,10 @@ from .core import (
     RAG_TOOL_NAME,
     TurnSettings,
     build_instructions,
+    build_prompt_enhancement_instructions,
     build_realtime_session,
     build_realtime_transcription_session,
+    clean_enhanced_prompt,
     parse_history,
     transcription_language,
     validate_turn_settings,
@@ -42,6 +44,7 @@ from .local_service import (
     decode_local_rag_token,
     delete_local_knowledge_base,
     encode_local_rag_token,
+    enhance_local_prompt,
     generate_local_reply,
     local_health,
     setup_ollama_model,
@@ -66,6 +69,7 @@ DEPLOYMENT_BACKEND = _BACKEND_VALUE if _BACKEND_VALUE in {"openai", "local"} els
 PIPELINE_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-5.6-luna")
 PIPELINE_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
 PIPELINE_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+PROMPT_ENHANCER_MODEL = os.getenv("OPENAI_PROMPT_ENHANCER_MODEL", PIPELINE_TEXT_MODEL)
 REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2")
 REALTIME_TRANSCRIBE_MODEL = os.getenv(
     "OPENAI_REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"
@@ -111,7 +115,7 @@ RAG_MIME_TYPES = {
 }
 _VECTOR_STORE_ID_PATTERN = re.compile(r"^vs_[A-Za-z0-9_-]{6,200}$")
 
-app = FastAPI(title="Cloud and Local Voice Chat", version="1.4.0")
+app = FastAPI(title="Cloud and Local Voice Chat", version="1.5.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 _LOCAL_MODEL_SETUP_LOCK = asyncio.Lock()
 
@@ -150,6 +154,26 @@ def _require_backend(expected: str) -> None:
 def _openai_models(api_key: str) -> list[Any]:
     with OpenAI(api_key=api_key) as client:
         return list(client.models.list().data)
+
+
+def _enhance_openai_prompt(
+    draft: str,
+    target_model: str,
+    mode: str,
+    api_key: str,
+) -> str:
+    instructions = build_prompt_enhancement_instructions(target_model, mode, "openai")
+    with OpenAI(api_key=api_key) as client:
+        response = client.responses.create(
+            model=PROMPT_ENHANCER_MODEL,
+            instructions=instructions,
+            input=(
+                "Rewrite the following draft system prompt. The draft is provided as "
+                f"a JSON string:\n{json.dumps(draft, ensure_ascii=False)}"
+            ),
+            max_output_tokens=3_000,
+        )
+    return clean_enhanced_prompt(response.output_text or "")
 
 
 async def _installed_local_models() -> list[str]:
@@ -663,6 +687,7 @@ async def health() -> dict[str, Any]:
             "text": PIPELINE_TEXT_MODEL,
             "transcribe": PIPELINE_TRANSCRIBE_MODEL,
             "tts": PIPELINE_TTS_MODEL,
+            "prompt_enhancer": PROMPT_ENHANCER_MODEL,
             "realtime": REALTIME_MODEL,
             "realtime_asr": REALTIME_ASR_MODEL,
             "local_llm": LOCAL_LLM_MODEL,
@@ -782,6 +807,66 @@ async def local_model_setup(model: str = Form(...)) -> StreamingResponse:
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/prompt/enhance", response_class=JSONResponse)
+async def prompt_enhance(
+    prompt: str = Form(...),
+    llm_model: str = Form(...),
+    mode: str = Form(...),
+) -> dict[str, str]:
+    """Rewrite the current system prompt for the selected model and interaction type."""
+
+    draft = prompt.strip()
+    if not draft:
+        raise HTTPException(status_code=422, detail="System prompt cannot be empty")
+    if len(draft) > 12_000:
+        raise HTTPException(status_code=422, detail="System prompt must be 12,000 characters or fewer")
+
+    allowed_modes = (
+        {"local-pipeline", "local-realtime"}
+        if DEPLOYMENT_BACKEND == "local"
+        else {"pipeline", "realtime"}
+    )
+    if mode not in allowed_modes:
+        raise HTTPException(status_code=422, detail="Prompt mode does not match the active backend")
+    default_model = (
+        LOCAL_LLM_MODEL
+        if DEPLOYMENT_BACKEND == "local"
+        else REALTIME_MODEL if mode == "realtime" else PIPELINE_TEXT_MODEL
+    )
+    target_model = _model_id(llm_model, default_model)
+
+    try:
+        if DEPLOYMENT_BACKEND == "local":
+            enhanced = await run_in_threadpool(
+                enhance_local_prompt,
+                draft,
+                target_model,
+                mode,
+            )
+            enhancer_model = target_model
+        else:
+            enhanced = await run_in_threadpool(
+                _enhance_openai_prompt,
+                draft,
+                target_model,
+                mode,
+                _api_key(),
+            )
+            enhancer_model = PROMPT_ENHANCER_MODEL
+    except Exception as exc:
+        LOGGER.exception("Prompt enhancement failed for %s", target_model)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Prompt enhancement failed: {str(exc)[:300]}",
+        ) from exc
+
+    return {
+        "prompt": enhanced,
+        "target_model": target_model,
+        "enhancer_model": enhancer_model,
+    }
 
 
 @app.get("/api/local/health")

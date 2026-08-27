@@ -21,7 +21,12 @@ from uuid import uuid4
 from xml.etree import ElementTree
 from zipfile import ZipFile
 
-from .core import TurnSettings, build_instructions
+from .core import (
+    TurnSettings,
+    build_instructions,
+    build_prompt_enhancement_instructions,
+    clean_enhanced_prompt,
+)
 
 
 LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
@@ -430,6 +435,30 @@ def generate_local_reply(
     if not reply:
         raise RuntimeError("The local language model returned an empty response")
     return reply, results
+
+
+def enhance_local_prompt(draft: str, model: str, mode: str) -> str:
+    """Rewrite a system prompt with the selected local model as the target runtime."""
+
+    instructions = build_prompt_enhancement_instructions(model, mode, "local")
+    with _llm_client() as client:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": instructions},
+                {
+                    "role": "user",
+                    "content": (
+                        "Rewrite the following draft system prompt. The draft is provided as "
+                        f"a JSON string:\n{json.dumps(draft, ensure_ascii=False)}"
+                    ),
+                },
+            ],
+            temperature=0.2,
+            max_tokens=3_000,
+        )
+    content = response.choices[0].message.content or ""
+    return clean_enhanced_prompt(content)
 
 
 async def stream_local_reply(

@@ -20,6 +20,7 @@ const LANGUAGES = [
 
 const VOICES = ["marin", "cedar", "coral", "alloy", "ash", "ballad", "echo", "sage", "shimmer", "verse"];
 const STORAGE_KEY = "voice-chatgpt-dual-mode-settings";
+const PROMPT_DEFAULT_STORAGE_KEY = "voice-chatgpt-default-system-prompt";
 const CLOUD_RAG_STORAGE_KEY = "voice-chatgpt-dual-mode-rag";
 const LOCAL_RAG_STORAGE_KEY = "voice-chatgpt-local-rag";
 const RAG_TOOL_NAME = "search_knowledge_base";
@@ -30,6 +31,9 @@ const el = {
   modeSwitch: document.querySelector("#mode-switch"),
   modeButtons: [...document.querySelectorAll(".mode-button")],
   systemPrompt: document.querySelector("#system-prompt"),
+  promptEnhanceButton: document.querySelector("#prompt-enhance-button"),
+  promptSaveButton: document.querySelector("#prompt-save-button"),
+  promptHelp: document.querySelector("#prompt-help"),
   llmModel: document.querySelector("#llm-model"),
   modelSetupButton: document.querySelector("#model-setup-button"),
   modelProgress: document.querySelector("#model-progress"),
@@ -82,6 +86,9 @@ const state = {
   modelCatalog: null,
   modelSelections: { text: "", realtime: "", local: "" },
   modelSetupInProgress: false,
+  promptEnhancing: false,
+  promptDirty: false,
+  savedPrompt: "",
   knowledge: {
     cloud: { token: "", files: [] },
     local: { token: "", files: [] },
@@ -130,8 +137,19 @@ function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
     if (saved.systemPrompt === LEGACY_DEFAULT_SYSTEM_PROMPT) delete saved.systemPrompt;
+    let savedPrompt = (localStorage.getItem(PROMPT_DEFAULT_STORAGE_KEY) || "").trim();
+    if (!savedPrompt && typeof saved.systemPrompt === "string" && saved.systemPrompt.trim()) {
+      savedPrompt = saved.systemPrompt.trim();
+      localStorage.setItem(PROMPT_DEFAULT_STORAGE_KEY, savedPrompt);
+    }
+    delete saved.systemPrompt;
     const savedModels = saved.models && typeof saved.models === "object" ? saved.models : {};
-    return { ...defaults, ...saved, models: { ...defaults.models, ...savedModels } };
+    return {
+      ...defaults,
+      ...saved,
+      systemPrompt: savedPrompt || defaults.systemPrompt,
+      models: { ...defaults.models, ...savedModels },
+    };
   } catch {
     return defaults;
   }
@@ -145,6 +163,100 @@ function currentSettings() {
     voice: el.voice.value,
     models: { ...state.modelSelections },
   };
+}
+
+function setPromptHelp(message, kind = "idle") {
+  el.promptHelp.textContent = message;
+  el.promptHelp.className = `prompt-help ${kind}`;
+}
+
+function markPromptDirty(message = "Prompt 已修改但尚未存成預設值。") {
+  state.promptDirty = true;
+  clearTimeout(saveTimer);
+  el.savedIndicator.textContent = "Prompt 尚未儲存";
+  setPromptHelp(message);
+}
+
+function savePromptDefault() {
+  const prompt = el.systemPrompt.value.trim();
+  if (!prompt) {
+    setPromptHelp("System Prompt 不可為空白。", "error");
+    return;
+  }
+  if (prompt.length > 12_000) {
+    setPromptHelp("System Prompt 不可超過 12,000 個字元。", "error");
+    return;
+  }
+
+  el.systemPrompt.value = prompt;
+  state.savedPrompt = prompt;
+  state.promptDirty = false;
+  localStorage.setItem(PROMPT_DEFAULT_STORAGE_KEY, prompt);
+  saveSettings();
+  el.savedIndicator.textContent = "Prompt 已設為預設";
+  setPromptHelp("目前內容已存成這個瀏覽器的預設 Prompt。", "success");
+}
+
+function setPromptEnhancing(busy) {
+  state.promptEnhancing = busy;
+  el.systemPrompt.readOnly = busy;
+  el.promptEnhanceButton.disabled = busy || !el.llmModel.value;
+  el.promptSaveButton.disabled = busy;
+  el.llmModel.disabled = busy || !el.llmModel.value;
+  el.modeButtons.forEach((button) => { button.disabled = busy; });
+  el.recordButton.disabled = busy;
+  el.callButton.disabled = busy;
+  el.promptEnhanceButton.textContent = busy ? "Enhancing…" : "Enhanced";
+}
+
+async function enhancePrompt() {
+  const prompt = el.systemPrompt.value.trim();
+  const model = el.llmModel.value;
+  if (!prompt) {
+    setPromptHelp("System Prompt 不可為空白。", "error");
+    return;
+  }
+  if (prompt.length > 12_000) {
+    setPromptHelp("System Prompt 不可超過 12,000 個字元。", "error");
+    return;
+  }
+  if (!model) {
+    setPromptHelp("請先選擇 LLM。", "error");
+    return;
+  }
+  if (state.pc || state.recorder?.state === "recording") {
+    setPromptHelp("請先結束目前的錄音或 Full Duplex 連線。", "error");
+    return;
+  }
+
+  stopLocalTurn();
+  setPromptEnhancing(true);
+  setPromptHelp(`正在依 ${model} 與目前模式改善 Prompt…`);
+  const formData = new FormData();
+  formData.append("prompt", prompt);
+  formData.append("llm_model", model);
+  formData.append("mode", state.mode);
+
+  try {
+    const response = await fetch("/api/prompt/enhance", { method: "POST", body: formData });
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) throw new Error(errorDetail(payload, `HTTP ${response.status}`));
+    if (!payload?.prompt) throw new Error("後端沒有回傳 Enhanced Prompt");
+
+    el.systemPrompt.value = payload.prompt;
+    markPromptDirty(
+      `已針對 ${payload.target_model || model} 完成改善。請先確認內容，再按 Save Prompt 設為預設值。`,
+    );
+  } catch (error) {
+    setPromptHelp(`Prompt 改善失敗：${error.message}`, "error");
+  } finally {
+    setPromptEnhancing(false);
+  }
 }
 
 function localRecommendation(modelId) {
@@ -238,6 +350,7 @@ function renderModelSelect() {
   el.llmModel.value = desired || el.llmModel.options[0]?.value || "";
   state.modelSelections[kind] = el.llmModel.value;
   el.llmModel.disabled = !el.llmModel.value;
+  el.promptEnhanceButton.disabled = state.promptEnhancing || !el.llmModel.value;
   renderModelHelp();
 }
 
@@ -278,6 +391,8 @@ function setModelSetupBusy(busy) {
   state.modelSetupInProgress = busy;
   el.llmModel.disabled = busy || !el.llmModel.value;
   el.modelSetupButton.disabled = busy || !el.llmModel.value;
+  el.promptEnhanceButton.disabled = busy || !el.llmModel.value;
+  el.promptSaveButton.disabled = busy;
   el.modeButtons.forEach((button) => { button.disabled = busy; });
   el.recordButton.disabled = busy;
   el.callButton.disabled = busy;
@@ -434,15 +549,19 @@ function setRagControlsBusy(busy) {
   el.ragDeleteButton.disabled = busy || !activeKnowledge().token;
   el.recordButton.disabled = busy;
   el.callButton.disabled = busy;
+  el.promptEnhanceButton.disabled = busy || !el.llmModel.value;
+  el.promptSaveButton.disabled = busy;
 }
 
 let saveTimer;
 function saveSettings() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(currentSettings()));
-  el.savedIndicator.textContent = "已儲存";
+  const settings = currentSettings();
+  settings.systemPrompt = state.savedPrompt || settings.systemPrompt;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  el.savedIndicator.textContent = state.promptDirty ? "Prompt 尚未儲存" : "已儲存";
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    el.savedIndicator.textContent = "自動儲存";
+    el.savedIndicator.textContent = state.promptDirty ? "Prompt 尚未儲存" : "自動儲存";
   }, 1200);
 }
 
@@ -648,6 +767,8 @@ function stopRecording() {
 async function sendPipelineTurn(blob) {
   el.modeButtons.forEach((button) => { button.disabled = true; });
   el.recordButton.disabled = true;
+  el.promptEnhanceButton.disabled = true;
+  el.promptSaveButton.disabled = true;
   el.ragFiles.disabled = true;
   el.ragUploadButton.disabled = true;
   el.ragDeleteButton.disabled = true;
@@ -685,6 +806,8 @@ async function sendPipelineTurn(blob) {
   } finally {
     el.modeButtons.forEach((button) => { button.disabled = false; });
     el.recordButton.disabled = false;
+    el.promptEnhanceButton.disabled = !el.llmModel.value;
+    el.promptSaveButton.disabled = false;
     el.ragFiles.disabled = false;
     el.ragUploadButton.disabled = false;
     el.ragDeleteButton.disabled = !activeKnowledge().token;
@@ -909,6 +1032,8 @@ async function handleRealtimeEvent(event) {
 async function startRealtime() {
   const local = state.mode === "local-realtime";
   el.callButton.disabled = true;
+  el.promptEnhanceButton.disabled = true;
+  el.promptSaveButton.disabled = true;
   el.modeButtons.forEach((button) => { button.disabled = true; });
   setStatus("正在建立安全連線…", "busy");
   try {
@@ -966,6 +1091,8 @@ async function startRealtime() {
     setStatus(`連線失敗：${error.message}`, "error");
   } finally {
     el.callButton.disabled = false;
+    el.promptEnhanceButton.disabled = !el.llmModel.value;
+    el.promptSaveButton.disabled = false;
     el.modeButtons.forEach((button) => { button.disabled = false; });
   }
 }
@@ -1004,6 +1131,7 @@ function initialize() {
   populateSelects();
   const settings = loadSettings();
   el.systemPrompt.value = settings.systemPrompt || el.systemPrompt.value;
+  state.savedPrompt = el.systemPrompt.value.trim();
   el.languageA.value = settings.languageA;
   el.languageB.value = settings.languageB;
   el.voice.value = settings.voice;
@@ -1013,14 +1141,16 @@ function initialize() {
   renderKnowledgeBase();
 
   el.modeButtons.forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
-  [el.systemPrompt, el.languageA, el.languageB, el.voice].forEach((input) => input.addEventListener("change", saveSettings));
+  [el.languageA, el.languageB, el.voice].forEach((input) => input.addEventListener("change", saveSettings));
   el.llmModel.addEventListener("change", () => {
     state.modelSelections[activeModelKind()] = el.llmModel.value;
     renderModelHelp();
     saveSettings();
   });
   el.modelSetupButton.addEventListener("click", setupLocalModel);
-  el.systemPrompt.addEventListener("input", saveSettings);
+  el.promptEnhanceButton.addEventListener("click", enhancePrompt);
+  el.promptSaveButton.addEventListener("click", savePromptDefault);
+  el.systemPrompt.addEventListener("input", () => markPromptDirty());
   el.recordButton.addEventListener("click", () => {
     if (state.recorder?.state === "recording") stopRecording();
     else startRecording();
