@@ -24,6 +24,9 @@ const PROMPT_DEFAULT_STORAGE_KEY = "voice-chatgpt-default-system-prompt";
 const CLOUD_RAG_STORAGE_KEY = "voice-chatgpt-dual-mode-rag";
 const LOCAL_RAG_STORAGE_KEY = "voice-chatgpt-local-rag";
 const RAG_TOOL_NAME = "search_knowledge_base";
+const LOCAL_DUPLEX_LANGUAGES = new Set(["zh-TW", "zh-CN", "en"]);
+const LOCAL_DUPLEX_INPUT_RATE = 16000;
+const LOCAL_DUPLEX_OUTPUT_RATE = 24000;
 const LEGACY_DEFAULT_SYSTEM_PROMPT = "You are a helpful voice assistant. Answer accurately, naturally, and concisely.";
 
 const el = {
@@ -48,6 +51,7 @@ const el = {
   ragStatus: document.querySelector("#rag-status"),
   ragFileList: document.querySelector("#rag-file-list"),
   ragHelp: document.querySelector("#rag-help"),
+  knowledgeCard: document.querySelector("#knowledge-card"),
   privacyNote: document.querySelector("#privacy-note"),
   status: document.querySelector("#status-text"),
   stateDot: document.querySelector(".state-dot"),
@@ -83,7 +87,7 @@ const state = {
   inputTranscript: "",
   outputTranscript: "",
   modelCatalog: null,
-  modelSelections: { text: "", realtime: "", local: "" },
+  modelSelections: { text: "", realtime: "", local_text: "", local_duplex: "" },
   modelSetupInProgress: false,
   promptDirty: false,
   savedPrompt: "",
@@ -91,9 +95,18 @@ const state = {
     cloud: { token: "", files: [] },
     local: { token: "", files: [] },
   },
-  localTurnController: null,
-  localAudioQueue: [],
-  localAudioObjectUrl: "",
+  localDuplexSocket: null,
+  localDuplexInputContext: null,
+  localDuplexOutputContext: null,
+  localDuplexSource: null,
+  localDuplexProcessor: null,
+  localDuplexGain: null,
+  localDuplexInputSamples: [],
+  localDuplexAudioEndMs: 0,
+  localDuplexNextPlaybackTime: 0,
+  localDuplexPlaybackSources: new Set(),
+  localDuplexCancelledSources: new Set(),
+  localDuplexPlayedMs: new Map(),
 };
 
 function isLocalMode() {
@@ -109,8 +122,13 @@ function activeKnowledge() {
 }
 
 function activeModelKind() {
-  if (isLocalMode()) return "local";
+  if (state.mode === "local-pipeline") return "local_text";
+  if (state.mode === "local-realtime") return "local_duplex";
   return isRealtimeMode() ? "realtime" : "text";
+}
+
+function realtimeActive() {
+  return Boolean(state.pc || state.localDuplexSocket);
 }
 
 function populateSelects() {
@@ -130,7 +148,7 @@ function loadSettings() {
     languageA: "zh-TW",
     languageB: "en",
     voice: "marin",
-    models: { text: "", realtime: "", local: "" },
+    models: { text: "", realtime: "", local_text: "", local_duplex: "" },
   };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
@@ -142,6 +160,8 @@ function loadSettings() {
     }
     delete saved.systemPrompt;
     const savedModels = saved.models && typeof saved.models === "object" ? saved.models : {};
+    if (savedModels.local && !savedModels.local_text) savedModels.local_text = savedModels.local;
+    delete savedModels.local;
     return {
       ...defaults,
       ...saved,
@@ -200,7 +220,7 @@ function localRecommendation(modelId) {
 }
 
 function renderModelSetupControls() {
-  const visible = activeModelKind() === "local" && Boolean(state.modelCatalog?.local?.setup_enabled);
+  const visible = activeModelKind() === "local_text" && Boolean(state.modelCatalog?.local?.setup_enabled);
   el.modelSetupButton.classList.toggle("hidden", !visible);
   el.modelSetupButton.disabled = !visible || !el.llmModel.value || state.modelSetupInProgress;
   if (!state.modelSetupInProgress) {
@@ -214,7 +234,15 @@ function renderModelHelp() {
   if (!state.modelCatalog) return;
   const kind = activeModelKind();
   const selected = el.llmModel.value;
-  if (kind !== "local") {
+  if (kind === "local_duplex") {
+    renderModelSetupControls();
+    const duplex = state.modelCatalog.local?.duplex || {};
+    el.modelHelp.textContent = duplex.ready
+      ? `${duplex.model} 已載入 · ${duplex.note}`
+      : `${duplex.model || selected} 尚未就緒；請查看伺服器的 MiniCPM-o 啟動 log。`;
+    return;
+  }
+  if (kind !== "local_text") {
     renderModelSetupControls();
     const warning = state.modelCatalog.warnings?.find((message) => message.startsWith("OpenAI"));
     el.modelHelp.textContent = warning
@@ -249,7 +277,7 @@ function renderModelSelect() {
   const defaults = state.modelCatalog.defaults || {};
   el.llmModel.replaceChildren();
 
-  if (kind === "local") {
+  if (kind === "local_text") {
     const installed = [...new Set(state.modelCatalog.local?.installed || [])];
     const recommendations = state.modelCatalog.local?.recommended || [];
     const installedGroup = document.createElement("optgroup");
@@ -264,12 +292,16 @@ function renderModelSelect() {
     if (installed.length) el.llmModel.append(installedGroup);
 
     const recommendedGroup = document.createElement("optgroup");
-    recommendedGroup.label = "RTX 3090 推薦（需先下載）";
+    recommendedGroup.label = "24GB GPU 多語文字模型（需先下載）";
     for (const item of recommendations) {
       if (installed.includes(item.id)) continue;
       recommendedGroup.append(new Option(`${item.label} · ${item.size} · ${item.note}`, item.id));
     }
     if (recommendedGroup.children.length) el.llmModel.append(recommendedGroup);
+  } else if (kind === "local_duplex") {
+    const duplex = state.modelCatalog.local?.duplex || {};
+    const modelId = duplex.model || defaults.local_duplex;
+    if (modelId) el.llmModel.add(new Option("MiniCPM-o 4.5 GPTQ · 原生中英文 Full Duplex", modelId));
   } else {
     const models = state.modelCatalog.openai?.[kind] || [];
     for (const modelId of models) el.llmModel.add(new Option(modelId, modelId));
@@ -303,9 +335,14 @@ async function loadModelCatalog(applyBackend = true) {
     state.modelCatalog = {
       backend: "openai",
       modes: ["pipeline", "realtime"],
-      defaults: { text: "gpt-5.6-luna", realtime: "gpt-realtime-2", local: "qwen3:8b" },
+      defaults: { text: "gpt-5.6-luna", realtime: "gpt-realtime-2", local_text: "qwen3.5:9b", local_duplex: "openbmb/MiniCPM-o-4_5-GPTQ" },
       openai: { text: ["gpt-5.6-luna"], realtime: ["gpt-realtime-2"] },
-      local: { installed: [], recommended: [{ id: "qwen3:8b", label: "Qwen 3 8B", size: "5.2 GB", note: "預設" }], setup_enabled: false },
+      local: {
+        installed: [],
+        recommended: [{ id: "qwen3.5:9b", label: "Qwen 3.5 9B", size: "6.6 GB", note: "201 種語言／方言" }],
+        setup_enabled: false,
+        duplex: { model: "openbmb/MiniCPM-o-4_5-GPTQ", ready: false, languages: ["en", "zh-CN", "zh-TW"], note: "原生中英文 Speech-to-Speech" },
+      },
       warnings: ["OpenAI model list could not be loaded; using the configured defaults."],
     };
     el.modelHelp.textContent = `模型清單載入失敗：${error.message}`;
@@ -340,15 +377,14 @@ function setModelSetupBusy(busy) {
 }
 
 async function setupLocalModel() {
-  if (activeModelKind() !== "local" || !el.llmModel.value) return;
-  if (state.pc || state.recorder?.state === "recording") {
+  if (activeModelKind() !== "local_text" || !el.llmModel.value) return;
+  if (realtimeActive() || state.recorder?.state === "recording") {
     el.modelHelp.textContent = "請先結束目前的錄音或 Full Duplex 連線，再設定模型。";
     return;
   }
 
-  stopLocalTurn();
   const model = el.llmModel.value;
-  state.modelSelections.local = model;
+  state.modelSelections.local_text = model;
   saveSettings();
   setModelSetupBusy(true);
   const formData = new FormData();
@@ -472,7 +508,7 @@ function renderKnowledgeBase() {
     knowledge.token ? "ready" : "idle",
   );
   el.ragHelp.textContent = local
-    ? "目前為地端知識庫：檔案在本機解析，embedding 與 Qdrant 都走地端；兩個 Local 模式共用。支援 PDF、DOCX、PPTX、文字與常見程式碼格式。"
+    ? "目前為 Local Pipeline 知識庫：檔案在本機解析，embedding 與 Qdrant 都走地端。原生 Local Full Duplex 暫不支援 RAG。支援 PDF、DOCX、PPTX、文字與常見程式碼格式。"
     : "目前為 OpenAI 知識庫：完成索引後，兩個 OpenAI 模式會共用相同檔案。";
 }
 
@@ -518,7 +554,6 @@ function addMessage(role, text) {
 }
 
 function clearConversation() {
-  stopLocalTurn();
   state.pipelineHistory = [];
   el.chatLog.replaceChildren();
   const empty = document.createElement("div");
@@ -549,8 +584,7 @@ function errorDetail(payload, fallback) {
 async function setMode(mode, force = false) {
   if (state.modelCatalog?.modes?.length && !state.modelCatalog.modes.includes(mode)) return;
   if (mode === state.mode && !force) return;
-  if (state.pc) stopRealtime();
-  stopLocalTurn();
+  if (realtimeActive()) stopRealtime();
   if (state.recorder && state.recorder.state === "recording") {
     state.discardRecording = true;
     state.recorder.stop();
@@ -560,20 +594,31 @@ async function setMode(mode, force = false) {
   el.modeButtons.forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
   const realtime = isRealtimeMode();
   const local = isLocalMode();
+  const nativeLocalDuplex = mode === "local-realtime";
   el.pipelineControls.classList.toggle("hidden", realtime);
   el.realtimeControls.classList.toggle("hidden", !realtime);
   const descriptions = {
     pipeline: "OpenAI 依序完成語音辨識、Responses 回覆與語音合成，適合保留清楚的逐輪紀錄。",
     realtime: "OpenAI Realtime 端到端雙向串流，可自然插話並立即打斷 AI。",
     "local-pipeline": "OpenAI 負責 ASR/TTS；RAG、embedding、Qdrant 與 LLM 回覆都在地端執行。",
-    "local-realtime": "OpenAI 串流 ASR/TTS + 地端 RAG/LLM。麥克風持續開啟，開口即可中止播放與尚未完成的生成。",
+    "local-realtime": "MiniCPM-o 4.5 在地端直接接收音訊並同步產生語音；支援中英文連續對話與插話，不經 OpenAI ASR/TTS。",
   };
   el.modeDescription.textContent = realtime
     ? `${descriptions[mode]} 連線期間修改設定時，請重新連線套用。`
     : descriptions[mode];
-  el.privacyNote.textContent = local
-    ? "語音由 AI 生成。檔案、RAG、embedding 與 LLM 留在地端；麥克風音訊會送至 OpenAI ASR，回答文字會送至 OpenAI TTS。"
+  el.privacyNote.textContent = nativeLocalDuplex
+    ? "語音由 AI 生成。此模式的麥克風音訊、理解與語音輸出均由地端 MiniCPM-o 處理，不會送至 OpenAI；此模式目前不支援 RAG。"
+    : local
+      ? "語音由 AI 生成。RAG、embedding 與文字 LLM 留在地端；Pipeline 的麥克風音訊會送至 OpenAI ASR，回答文字會送至 OpenAI TTS。"
     : "語音由 AI 生成。OpenAI 模式會將上傳檔案交由 OpenAI 建立檢索索引；請勿上傳未經授權的機密資料。";
+  el.knowledgeCard.classList.toggle("hidden", nativeLocalDuplex);
+  for (const option of [...el.languageA.options, ...el.languageB.options]) {
+    option.disabled = nativeLocalDuplex && !LOCAL_DUPLEX_LANGUAGES.has(option.value);
+  }
+  if (nativeLocalDuplex && !LOCAL_DUPLEX_LANGUAGES.has(el.languageA.value)) el.languageA.value = "zh-TW";
+  if (nativeLocalDuplex && !LOCAL_DUPLEX_LANGUAGES.has(el.languageB.value)) el.languageB.value = "en";
+  el.voice.disabled = nativeLocalDuplex;
+  el.voice.title = nativeLocalDuplex ? "Local Full Duplex 使用 MiniCPM-o 參考音訊的固定聲線" : "";
   renderModelSelect();
   renderKnowledgeBase();
   el.callButtonLabel.textContent = local ? "開始 Local Full Duplex" : "開始 Full Duplex";
@@ -586,7 +631,7 @@ async function uploadKnowledgeFiles() {
     setRagStatus("請先選擇檔案", "error");
     return;
   }
-  if (state.pc) stopRealtime();
+  if (realtimeActive()) stopRealtime();
   if (state.recorder?.state === "recording") {
     state.discardRecording = true;
     state.recorder.stop();
@@ -629,7 +674,7 @@ async function deleteKnowledgeBase() {
   if (!knowledge.token) return;
   const target = engine === "local" ? "本機 Qdrant 知識庫" : "這個知識庫及其 OpenAI 檔案";
   if (!window.confirm(`要刪除${target}嗎？`)) return;
-  if (state.pc) stopRealtime();
+  if (realtimeActive()) stopRealtime();
   if (state.recorder?.state === "recording") {
     state.discardRecording = true;
     state.recorder.stop();
@@ -801,108 +846,252 @@ async function runRealtimeKnowledgeTools(toolCalls) {
   }
 }
 
-function stopLocalTurn() {
-  state.localTurnController?.abort();
-  state.localTurnController = null;
-  state.localAudioQueue = [];
-  el.pipelineAudio.pause();
-  el.pipelineAudio.removeAttribute("src");
-  el.pipelineAudio.load();
-  if (state.localAudioObjectUrl) URL.revokeObjectURL(state.localAudioObjectUrl);
-  state.localAudioObjectUrl = "";
-  state.outputTranscript = "";
-  showLiveCaption("assistant", "");
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
 }
 
-function playNextLocalAudio() {
-  if (state.localAudioObjectUrl || !state.localAudioQueue.length) return;
-  const blob = state.localAudioQueue.shift();
-  state.localAudioObjectUrl = URL.createObjectURL(blob);
-  el.pipelineAudio.src = state.localAudioObjectUrl;
-  el.pipelineAudio.onended = () => {
-    URL.revokeObjectURL(state.localAudioObjectUrl);
-    state.localAudioObjectUrl = "";
-    playNextLocalAudio();
-  };
-  void el.pipelineAudio.play().catch(() => {});
+function floatToPcm16Base64(samples) {
+  const buffer = new ArrayBuffer(samples.length * 2);
+  const view = new DataView(buffer);
+  samples.forEach((sample, index) => {
+    const limited = Math.max(-1, Math.min(1, sample));
+    view.setInt16(index * 2, limited < 0 ? limited * 0x8000 : limited * 0x7fff, true);
+  });
+  return bytesToBase64(new Uint8Array(buffer));
 }
 
-function queueLocalAudio(audioBase64, mimeType) {
+function resampleMono(input, sourceRate, targetRate) {
+  if (sourceRate === targetRate) return Float32Array.from(input);
+  const outputLength = Math.max(1, Math.round(input.length * targetRate / sourceRate));
+  const output = new Float32Array(outputLength);
+  const ratio = sourceRate / targetRate;
+  for (let index = 0; index < outputLength; index += 1) {
+    const position = index * ratio;
+    const left = Math.floor(position);
+    const right = Math.min(left + 1, input.length - 1);
+    const mix = position - left;
+    output[index] = input[left] * (1 - mix) + input[right] * mix;
+  }
+  return output;
+}
+
+function sendLocalDuplexEvent(event) {
+  if (state.localDuplexSocket?.readyState === WebSocket.OPEN) {
+    state.localDuplexSocket.send(JSON.stringify(event));
+  }
+}
+
+function flushLocalDuplexInput(final = false) {
+  const frameSamples = 3200;
+  while (state.localDuplexInputSamples.length >= frameSamples || (final && state.localDuplexInputSamples.length)) {
+    const count = final ? Math.min(frameSamples, state.localDuplexInputSamples.length) : frameSamples;
+    const frame = state.localDuplexInputSamples.splice(0, count);
+    const durationMs = frame.length * 1000 / LOCAL_DUPLEX_INPUT_RATE;
+    state.localDuplexAudioEndMs += durationMs;
+    sendLocalDuplexEvent({
+      type: "input_audio_buffer.append",
+      audio: floatToPcm16Base64(frame),
+      input_audio_format: "pcm16",
+      sample_rate_hz: LOCAL_DUPLEX_INPUT_RATE,
+      duration_ms: durationMs,
+      audio_end_ms: state.localDuplexAudioEndMs,
+    });
+  }
+}
+
+function stopLocalDuplexPlayback() {
+  for (const source of state.localDuplexPlaybackSources) {
+    state.localDuplexCancelledSources.add(source);
+    try { source.stop(); } catch { /* already stopped */ }
+  }
+  state.localDuplexPlaybackSources.clear();
+  state.localDuplexNextPlaybackTime = 0;
+}
+
+function queueLocalDuplexPcm(audioBase64, sampleRate, responseId, itemId) {
   const binary = atob(audioBase64);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  state.localAudioQueue.push(new Blob([bytes], { type: mimeType || "audio/mpeg" }));
-  playNextLocalAudio();
+  const sampleCount = Math.floor(bytes.length / 2);
+  if (!sampleCount) return;
+
+  const context = state.localDuplexOutputContext;
+  if (!context) return;
+  const audioBuffer = context.createBuffer(1, sampleCount, sampleRate || LOCAL_DUPLEX_OUTPUT_RATE);
+  const channel = audioBuffer.getChannelData(0);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let index = 0; index < sampleCount; index += 1) {
+    channel[index] = view.getInt16(index * 2, true) / 0x8000;
+  }
+
+  const source = context.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(context.destination);
+  const startAt = Math.max(context.currentTime + 0.02, state.localDuplexNextPlaybackTime || 0);
+  state.localDuplexNextPlaybackTime = startAt + audioBuffer.duration;
+  state.localDuplexPlaybackSources.add(source);
+  source.addEventListener("ended", () => {
+    state.localDuplexPlaybackSources.delete(source);
+    if (state.localDuplexCancelledSources.delete(source)) return;
+    if (!responseId) return;
+    const playedMs = (state.localDuplexPlayedMs.get(responseId) || 0) + audioBuffer.duration * 1000;
+    state.localDuplexPlayedMs.set(responseId, playedMs);
+    sendLocalDuplexEvent({
+      type: "playback.ack",
+      response_id: responseId,
+      item_id: itemId || `item_${responseId}`,
+      played_ms: playedMs,
+      committed_ms: playedMs,
+    });
+  });
+  source.start(startAt);
 }
 
-async function runLocalDuplexTurn(transcript) {
-  stopLocalTurn();
-  const controller = new AbortController();
-  state.localTurnController = controller;
-  state.outputTranscript = "";
-  setStatus("地端 RAG / LLM 正在回答…", "busy");
-
-  const formData = new FormData();
-  formData.append("transcript", transcript);
-  formData.append("history_json", JSON.stringify(state.pipelineHistory));
-  appendSettings(formData);
-
-  try {
-    const response = await fetch("/api/local/realtime/turn", {
-      method: "POST",
-      body: formData,
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      let payload;
-      try {
-        payload = await response.json();
-      } catch {
-        payload = null;
-      }
-      throw new Error(errorDetail(payload, `HTTP ${response.status}`));
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let finalReply = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const event = JSON.parse(line);
-        if (event.type === "text_delta") {
-          state.outputTranscript += event.delta || "";
-          showLiveCaption("assistant", state.outputTranscript);
-        } else if (event.type === "audio") {
-          queueLocalAudio(event.audio_base64, event.audio_mime);
-        } else if (event.type === "done") {
-          finalReply = (event.reply || state.outputTranscript).trim();
-        } else if (event.type === "error") {
-          throw new Error(event.message || "Local Full Duplex failed");
-        }
-      }
-      if (done) break;
-    }
-    if (!finalReply) finalReply = state.outputTranscript.trim();
-    if (finalReply) {
-      addMessage("assistant", finalReply);
-      state.pipelineHistory.push(
-        { role: "user", content: transcript },
-        { role: "assistant", content: finalReply },
-      );
-      state.pipelineHistory = state.pipelineHistory.slice(-20);
-    }
+function handleLocalDuplexEvent(event) {
+  const type = event.type || "";
+  if (type === "session.created" || type === "session.updated") {
+    setStatus("Local Full Duplex 已連線，可直接說話", "ready");
+    return;
+  }
+  if (type.includes("input_audio_transcription") && type.endsWith(".delta")) {
+    state.inputTranscript += event.delta || "";
+    showLiveCaption("user", state.inputTranscript);
+    return;
+  }
+  if (type.includes("input_audio_transcription") && (type.endsWith(".completed") || type.endsWith(".done"))) {
+    const transcript = (event.transcript || state.inputTranscript).trim();
+    if (transcript) addMessage("user", transcript);
+    state.inputTranscript = "";
+    showLiveCaption("user", "");
+    return;
+  }
+  if (type === "response.audio.delta") {
+    queueLocalDuplexPcm(
+      event.delta || event.audio || "",
+      event.sample_rate_hz || LOCAL_DUPLEX_OUTPUT_RATE,
+      event.response_id || event.response?.id || "",
+      event.item_id || "",
+    );
+    return;
+  }
+  if (type === "response.audio_transcript.delta" || type === "response.output_text.delta") {
+    state.outputTranscript += event.delta || "";
+    showLiveCaption("assistant", state.outputTranscript);
+    return;
+  }
+  if (type === "response.listen") {
+    stopLocalDuplexPlayback();
+    setStatus("正在聆聽…", "live");
+    return;
+  }
+  if (type === "response.created") {
+    state.outputTranscript = "";
+    setStatus("MiniCPM-o 正在回答…", "busy");
+    return;
+  }
+  if (type === "response.done") {
+    const transcript = (event.transcript || event.response?.output_text || state.outputTranscript).trim();
+    if (transcript) addMessage("assistant", transcript);
     state.outputTranscript = "";
     showLiveCaption("assistant", "");
     setStatus("Local Full Duplex 已連線，可直接說話", "ready");
+    return;
+  }
+  if (type === "error") {
+    const message = typeof event.error === "string"
+      ? event.error
+      : event.error?.message || event.message || "未知錯誤";
+    setStatus(`Local Full Duplex 錯誤：${message}`, "error");
+  }
+}
+
+async function startLocalDuplex() {
+  el.callButton.disabled = true;
+  el.promptSaveButton.disabled = true;
+  el.modeButtons.forEach((button) => { button.disabled = true; });
+  setStatus("正在連接地端 MiniCPM-o…", "busy");
+  try {
+    state.micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    });
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    state.localDuplexInputContext = new AudioContextClass();
+    state.localDuplexOutputContext = new AudioContextClass();
+    await Promise.all([state.localDuplexInputContext.resume(), state.localDuplexOutputContext.resume()]);
+
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${protocol}//${location.host}/api/local/duplex`);
+    state.localDuplexSocket = socket;
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve, { once: true });
+      socket.addEventListener("error", () => reject(new Error("無法連接 Local Full Duplex WebSocket")), { once: true });
+    });
+    const sessionReady = new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error("MiniCPM-o session 建立逾時")), 30000);
+      socket.addEventListener("message", (message) => {
+        try {
+          const event = JSON.parse(message.data);
+          handleLocalDuplexEvent(event);
+          if (event.type === "session.created") {
+            window.clearTimeout(timeout);
+            resolve();
+          } else if (event.type === "error") {
+            window.clearTimeout(timeout);
+            const message = typeof event.error === "string"
+              ? event.error
+              : event.error?.message || event.message || "MiniCPM-o session 建立失敗";
+            reject(new Error(message));
+          }
+        } catch { /* diagnostic event */ }
+      });
+    });
+    socket.addEventListener("close", () => {
+      if (state.localDuplexSocket === socket) {
+        stopRealtime(false);
+        setStatus("Local Full Duplex 連線已結束", "error");
+      }
+    });
+    const settings = currentSettings();
+    socket.send(JSON.stringify({
+      type: "voice_chat.configure",
+      system_prompt: settings.systemPrompt,
+      language_a: settings.languageA,
+      language_b: settings.languageB,
+      voice: settings.voice,
+      llm_model: el.llmModel.value,
+    }));
+    await sessionReady;
+
+    state.localDuplexSource = state.localDuplexInputContext.createMediaStreamSource(state.micStream);
+    state.localDuplexProcessor = state.localDuplexInputContext.createScriptProcessor(4096, 1, 1);
+    state.localDuplexGain = state.localDuplexInputContext.createGain();
+    state.localDuplexGain.gain.value = 0;
+    state.localDuplexProcessor.addEventListener("audioprocess", (audioEvent) => {
+      if (state.muted || socket.readyState !== WebSocket.OPEN) return;
+      const mono = audioEvent.inputBuffer.getChannelData(0);
+      const resampled = resampleMono(mono, state.localDuplexInputContext.sampleRate, LOCAL_DUPLEX_INPUT_RATE);
+      state.localDuplexInputSamples.push(...resampled);
+      flushLocalDuplexInput();
+    });
+    state.localDuplexSource.connect(state.localDuplexProcessor);
+    state.localDuplexProcessor.connect(state.localDuplexGain);
+    state.localDuplexGain.connect(state.localDuplexInputContext.destination);
+    state.localDuplexAudioEndMs = 0;
+    state.localDuplexNextPlaybackTime = 0;
+    el.callButton.classList.add("connected");
+    el.callButtonLabel.textContent = "結束 Local Full Duplex";
+    el.muteButton.disabled = false;
   } catch (error) {
-    if (error.name !== "AbortError") setStatus(`地端回答失敗：${error.message}`, "error");
+    stopRealtime(false);
+    setStatus(`連線失敗：${error.message}`, "error");
   } finally {
-    if (state.localTurnController === controller) state.localTurnController = null;
+    el.callButton.disabled = false;
+    el.promptSaveButton.disabled = false;
+    el.modeButtons.forEach((button) => { button.disabled = false; });
   }
 }
 
@@ -915,10 +1104,7 @@ async function handleRealtimeEvent(event) {
   }
   if (type === "conversation.item.input_audio_transcription.completed") {
     const transcript = (event.transcript || state.inputTranscript).trim();
-    if (transcript) {
-      addMessage("user", transcript);
-      if (state.mode === "local-realtime") void runLocalDuplexTurn(transcript);
-    }
+    if (transcript) addMessage("user", transcript);
     state.inputTranscript = "";
     showLiveCaption("user", "");
     return;
@@ -936,7 +1122,6 @@ async function handleRealtimeEvent(event) {
     return;
   }
   if (type === "input_audio_buffer.speech_started") {
-    if (state.mode === "local-realtime") stopLocalTurn();
     setStatus("正在聆聽…", "live");
     return;
   }
@@ -961,7 +1146,7 @@ async function handleRealtimeEvent(event) {
 }
 
 async function startRealtime() {
-  const local = state.mode === "local-realtime";
+  if (state.mode === "local-realtime") return startLocalDuplex();
   el.callButton.disabled = true;
   el.promptSaveButton.disabled = true;
   el.modeButtons.forEach((button) => { button.disabled = true; });
@@ -983,10 +1168,7 @@ async function startRealtime() {
     state.micStream.getTracks().forEach((track) => state.pc.addTrack(track, state.micStream));
 
     state.dataChannel = state.pc.createDataChannel("oai-events");
-    state.dataChannel.addEventListener("open", () => setStatus(
-      local ? "Local Full Duplex 已連線，可直接說話" : "已連線，可直接說話",
-      "ready",
-    ));
+    state.dataChannel.addEventListener("open", () => setStatus("已連線，可直接說話", "ready"));
     state.dataChannel.addEventListener("message", (message) => {
       try {
         void handleRealtimeEvent(JSON.parse(message.data));
@@ -1000,8 +1182,7 @@ async function startRealtime() {
     const formData = new FormData();
     formData.append("sdp", offer.sdp);
     appendSettings(formData);
-    const endpoint = local ? "/api/local/realtime/session" : "/api/realtime/session";
-    const response = await fetch(endpoint, { method: "POST", body: formData });
+    const response = await fetch("/api/realtime/session", { method: "POST", body: formData });
     if (!response.ok) {
       let payload;
       try {
@@ -1014,7 +1195,7 @@ async function startRealtime() {
     await state.pc.setRemoteDescription({ type: "answer", sdp: await response.text() });
 
     el.callButton.classList.add("connected");
-    el.callButtonLabel.textContent = local ? "結束 Local Full Duplex" : "結束 Full Duplex";
+    el.callButtonLabel.textContent = "結束 Full Duplex";
     el.muteButton.disabled = false;
   } catch (error) {
     stopRealtime(false);
@@ -1027,7 +1208,29 @@ async function startRealtime() {
 }
 
 function stopRealtime(updateStatus = true) {
-  stopLocalTurn();
+  if (state.localDuplexSocket?.readyState === WebSocket.OPEN) {
+    flushLocalDuplexInput(true);
+    sendLocalDuplexEvent({ type: "input_audio_buffer.commit", final: true });
+    sendLocalDuplexEvent({ type: "session.close" });
+  }
+  const localSocket = state.localDuplexSocket;
+  state.localDuplexSocket = null;
+  localSocket?.close();
+  state.localDuplexProcessor?.disconnect();
+  state.localDuplexSource?.disconnect();
+  state.localDuplexGain?.disconnect();
+  stopLocalDuplexPlayback();
+  void state.localDuplexInputContext?.close();
+  void state.localDuplexOutputContext?.close();
+  state.localDuplexProcessor = null;
+  state.localDuplexSource = null;
+  state.localDuplexGain = null;
+  state.localDuplexInputContext = null;
+  state.localDuplexOutputContext = null;
+  state.localDuplexInputSamples = [];
+  state.localDuplexAudioEndMs = 0;
+  state.localDuplexPlayedMs.clear();
+  state.localDuplexCancelledSources.clear();
   state.dataChannel?.close();
   state.pc?.close();
   state.micStream?.getTracks().forEach((track) => track.stop());
@@ -1084,7 +1287,7 @@ function initialize() {
     else startRecording();
   });
   el.callButton.addEventListener("click", () => {
-    if (state.pc) stopRealtime();
+    if (realtimeActive()) stopRealtime();
     else startRealtime();
   });
   el.muteButton.addEventListener("click", toggleMute);

@@ -3,14 +3,21 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 compose_file="${project_dir}/docker-compose.local.yml"
-local_llm_model="${LOCAL_LLM_MODEL:-qwen3:8b}"
+local_llm_model="${LOCAL_LLM_MODEL:-qwen3.5:9b}"
 local_embedding_model="${LOCAL_EMBEDDING_MODEL:-bge-m3}"
+local_duplex_model="${LOCAL_DUPLEX_MODEL:-openbmb/MiniCPM-o-4_5-GPTQ}"
+local_duplex_timeout="${LOCAL_DUPLEX_STARTUP_TIMEOUT_SECONDS:-900}"
+ref_audio_dir="${project_dir}/runtime/ref_audio"
+ref_audio_path="${LOCAL_DUPLEX_REF_AUDIO:-${ref_audio_dir}/ref_minicpm_signature.wav}"
+ref_audio_url="${LOCAL_DUPLEX_REF_AUDIO_URL:-https://raw.githubusercontent.com/OpenBMB/MiniCPM-o-Demo/main/assets/ref_audio/ref_minicpm_signature.wav}"
 
 if [[ "${MANAGE_LOCAL_SERVICES:-1}" == "0" ]]; then
   export LOCAL_LLM_BASE_URL="${LOCAL_LLM_BASE_URL:-http://127.0.0.1:11434/v1}"
   export LOCAL_EMBEDDING_BASE_URL="${LOCAL_EMBEDDING_BASE_URL:-${LOCAL_LLM_BASE_URL}}"
   export QDRANT_URL="${QDRANT_URL:-http://127.0.0.1:6333}"
-  echo "Using externally managed local LLM, embedding, and Qdrant services."
+  export LOCAL_DUPLEX_WS_URL="${LOCAL_DUPLEX_WS_URL:-ws://127.0.0.1:8099/v1/realtime}"
+  export LOCAL_DUPLEX_REF_AUDIO="${ref_audio_path}"
+  echo "Using externally managed local text LLM, speech LLM, embedding, and Qdrant services."
   return 0 2>/dev/null || exit 0
 fi
 
@@ -24,6 +31,25 @@ if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>
   exit 1
 fi
 
+if [[ ! "${local_duplex_timeout}" =~ ^[0-9]+$ ]] || (( local_duplex_timeout < 30 )); then
+  echo "LOCAL_DUPLEX_STARTUP_TIMEOUT_SECONDS must be an integer of at least 30." >&2
+  return 2 2>/dev/null || exit 2
+fi
+
+if [[ ! -s "${ref_audio_path}" ]]; then
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required to download the MiniCPM-o reference voice." >&2
+    return 1 2>/dev/null || exit 1
+  fi
+  mkdir -p "$(dirname "${ref_audio_path}")"
+  echo "Downloading the official MiniCPM-o reference voice."
+  curl -fL --retry 3 --connect-timeout 15 "${ref_audio_url}" -o "${ref_audio_path}"
+fi
+
+export LOCAL_DUPLEX_MODEL="${local_duplex_model}"
+export LOCAL_DUPLEX_REF_AUDIO="${ref_audio_path}"
+export LOCAL_DUPLEX_GPU_ID="${LOCAL_DUPLEX_GPU_ID:-${LOCAL_GPU_ID:-0}}"
+
 docker compose -f "${compose_file}" up -d
 
 ollama_host_binding="$(
@@ -35,6 +61,17 @@ if [[ ! "${ollama_host_binding}" =~ ^127\.0\.0\.1:([0-9]+)$ ]]; then
 fi
 ollama_host_port="${BASH_REMATCH[1]}"
 managed_ollama_base_url="http://127.0.0.1:${ollama_host_port}/v1"
+
+duplex_host_binding="$(
+  docker compose -f "${compose_file}" port minicpmo 8099 2>/dev/null | head -n 1
+)"
+if [[ ! "${duplex_host_binding}" =~ ^127\.0\.0\.1:([0-9]+)$ ]]; then
+  echo "Could not determine the MiniCPM-o host port: ${duplex_host_binding:-no mapping returned}." >&2
+  return 1 2>/dev/null || exit 1
+fi
+duplex_host_port="${BASH_REMATCH[1]}"
+managed_duplex_http_url="http://127.0.0.1:${duplex_host_port}"
+managed_duplex_ws_url="ws://127.0.0.1:${duplex_host_port}/v1/realtime"
 
 ollama_ready=0
 for _ in $(seq 1 45); do
@@ -50,6 +87,26 @@ if [[ "${ollama_ready}" != "1" ]]; then
 fi
 unset ollama_ready
 
+duplex_ready=0
+for _ in $(seq 1 "${local_duplex_timeout}"); do
+  if curl --noproxy '*' -fsS "${managed_duplex_http_url}/health" >/dev/null 2>&1; then
+    duplex_ready=1
+    break
+  fi
+  if ! docker compose -f "${compose_file}" ps --status running --services | grep -qx minicpmo; then
+    echo "MiniCPM-o stopped before becoming ready. Recent log:" >&2
+    docker compose -f "${compose_file}" logs --tail 120 minicpmo >&2 || true
+    return 1 2>/dev/null || exit 1
+  fi
+  sleep 1
+done
+if [[ "${duplex_ready}" != "1" ]]; then
+  echo "MiniCPM-o did not become ready within ${local_duplex_timeout} seconds. Recent log:" >&2
+  docker compose -f "${compose_file}" logs --tail 120 minicpmo >&2 || true
+  return 1 2>/dev/null || exit 1
+fi
+unset duplex_ready
+
 if [[ "${SKIP_LOCAL_MODEL_PULL:-0}" != "1" ]]; then
   if ! docker compose -f "${compose_file}" exec -T ollama ollama show "${local_llm_model}" >/dev/null 2>&1; then
     docker compose -f "${compose_file}" exec -T ollama ollama pull "${local_llm_model}"
@@ -61,5 +118,7 @@ fi
 
 export LOCAL_LLM_BASE_URL="${LOCAL_LLM_BASE_URL:-${managed_ollama_base_url}}"
 export LOCAL_EMBEDDING_BASE_URL="${LOCAL_EMBEDDING_BASE_URL:-${managed_ollama_base_url}}"
+export LOCAL_DUPLEX_WS_URL="${LOCAL_DUPLEX_WS_URL:-${managed_duplex_ws_url}}"
 export QDRANT_URL="${QDRANT_URL:-http://127.0.0.1:6333}"
 echo "Docker Ollama is available at ${managed_ollama_base_url}."
+echo "Docker MiniCPM-o Full Duplex is available at ${managed_duplex_http_url}."

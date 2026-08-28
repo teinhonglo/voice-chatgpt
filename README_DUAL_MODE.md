@@ -1,19 +1,23 @@
 # Cloud / Local voice chat
 
-The project implements four voice architectures, but each launch exposes only the two modes that match `BACKEND`. `BACKEND=openai` shows OpenAI Pipeline and OpenAI Full Duplex. `BACKEND=local` shows Local Pipeline and Local Full Duplex. The two visible modes share the same **System prompt**, **Language A** (the user speaks), **Language B** (the assistant answers), **Voice**, transcript UI, and file upload workflow. The **LLM** selector changes automatically with the selected mode.
+The project implements four voice architectures, but each launch exposes only the two modes that match `BACKEND`. `BACKEND=openai` shows OpenAI Pipeline and OpenAI Full Duplex. `BACKEND=local` shows Local Pipeline and Local Full Duplex. The **LLM** selector changes automatically with the selected mode: the Local Pipeline selector contains multilingual Ollama text models, while Local Full Duplex uses a dedicated speech-to-speech model.
 
 | Mode | ASR | LLM + RAG | TTS | Interaction |
 |---|---|---|---|---|
 | OpenAI Pipeline | OpenAI | OpenAI Responses + hosted vector store | OpenAI | recorded turns |
 | OpenAI Full Duplex | OpenAI Realtime | OpenAI Realtime + hosted vector-store tool | OpenAI Realtime | end-to-end duplex |
 | Local Pipeline | OpenAI | local OpenAI-compatible LLM + local embeddings + Qdrant | OpenAI | recorded turns |
-| Local Full Duplex | OpenAI streaming transcription | local OpenAI-compatible LLM + local embeddings + Qdrant | OpenAI streaming chunks | continuous microphone + barge-in |
+| Local Full Duplex | MiniCPM-o 4.5 | MiniCPM-o 4.5 GPTQ | MiniCPM-o 4.5 | native local speech-to-speech duplex |
 
-Local Full Duplex is a **cascaded duplex** implementation, not a local end-to-end speech-to-speech foundation model. The microphone remains open while output plays. When VAD reports that the user has started speaking, the browser immediately stops queued audio and cancels the active local generation request. It normally has more latency than OpenAI Full Duplex because ASR, retrieval, LLM, and TTS are separate stages.
+Local Full Duplex is now a **native end-to-end speech-to-speech** implementation. The browser sends mono 16 kHz PCM16 frames through the app's same-origin WebSocket proxy to a private vLLM-Omni MiniCPM-o runtime, and plays returned 24 kHz PCM16 chunks while the microphone remains active. It no longer reuses the Ollama text model and no longer calls OpenAI ASR or TTS.
+
+MiniCPM-o 4.5 has broader multilingual understanding, but its model card specifically guarantees realtime speech conversation in **Chinese and English**. The Local Full Duplex language selectors therefore expose only Traditional/Simplified Mandarin and English. Local Pipeline retains the full multilingual language selector.
 
 ## Data boundary
 
-In both Local modes, uploaded files are parsed by this server and stored only in the configured local embedding service and Qdrant; the System prompt, retrieved chunks, history, and LLM reasoning go to the configured local LLM endpoint. User audio still goes to OpenAI ASR, and generated answer segments go to OpenAI TTS. Therefore these modes are locally managed for **LLM and vector data**, but they are not fully offline.
+Local Pipeline parses uploaded files on this server and stores vectors in the configured local embedding service and Qdrant. Its prompt, retrieved chunks, history, and answer generation go to the local Ollama-compatible text endpoint; recorded user audio still goes to OpenAI ASR, and the answer text goes to OpenAI TTS.
+
+Local Full Duplex sends microphone audio, instructions, and generated speech only to the configured private MiniCPM-o endpoint. It does not use the OpenAI API and currently does not support RAG. The OpenAI API key is still required by `run.sh --backend local` because the same deployment also exposes Local Pipeline.
 
 The OpenAI API key never goes to the browser.
 
@@ -54,7 +58,7 @@ BACKEND=local ./install_conda_envs.sh
 | `BACKEND` | Default Conda environment | Extra startup behavior |
 |---|---|---|
 | `openai` | `voice-chatgpt-openai` | start the web server and Cloudflare Tunnel |
-| `local` | `voice-chatgpt-local` | start Ollama, Qdrant, the web server, and Cloudflare Tunnel |
+| `local` | `voice-chatgpt-local` | start Ollama, Qdrant, MiniCPM-o, the web server, and Cloudflare Tunnel |
 
 `BACKEND` selects the server environment, dependency bootstrap, API routes, and the two homepage modes. OpenAI launches do not show or enable Local routes; Local launches do not show or enable OpenAI LLM/RAG routes.
 
@@ -77,13 +81,15 @@ export OPENAI_API_KEY="sk-..."
 
 The script starts the web app and Cloudflare Tunnel together. Copy the public HTTPS URL printed by `cloudflared`. The tunnel uses HTTP/2 over TCP so it also works on servers that block outbound QUIC/UDP.
 
-## Run with the Local backend environment (Ollama + Qdrant)
+## Run with the Local backend environment (Ollama + Qdrant + MiniCPM-o)
 
 Requirements:
 
 - Docker with the Compose plugin
 - NVIDIA Container Toolkit for the GPU configuration in `docker-compose.local.yml`
-- an OpenAI API key for ASR and TTS
+- a 24 GB NVIDIA GPU (RTX 3090-class) for the documented quantized defaults
+- enough disk for the vLLM-Omni image, Qwen text weights, MiniCPM-o GPTQ weights, and Hugging Face cache
+- an OpenAI API key for the Local Pipeline ASR/TTS path
 
 ```bash
 export OPENAI_API_KEY="sk-..."
@@ -92,9 +98,13 @@ export OPENAI_API_KEY="sk-..."
 
 Use `BACKEND=local` for the two Local modes. It starts the local dependencies and hides the OpenAI-only modes. Use `BACKEND=openai` for the two OpenAI modes; it neither starts nor probes local dependencies.
 
-Local startup activates `voice-chatgpt-local`, starts Ollama and Qdrant, downloads `qwen3:8b` and `bge-m3` when missing, and starts the web app. Set `SKIP_LOCAL_MODEL_PULL=1` to skip the model check. Model data and Qdrant collections use named Docker volumes, so they survive restarts. Check the three local dependencies at <http://localhost:7860/api/local/health>.
+Local startup activates `voice-chatgpt-local`, starts Ollama, Qdrant and vLLM-Omni, downloads `qwen3.5:9b` and `bge-m3` when missing, and loads `openbmb/MiniCPM-o-4_5-GPTQ`. The first launch can take several minutes because the official vLLM-Omni image and Hugging Face model are large. `LOCAL_DUPLEX_STARTUP_TIMEOUT_SECONDS` defaults to 900 seconds. Set `SKIP_LOCAL_MODEL_PULL=1` to skip only the Ollama model checks. Model data and Qdrant collections use named Docker volumes, so they survive restarts. Check all local dependencies at <http://localhost:7860/api/local/health>.
+
+The startup script also downloads MiniCPM-o's official reference WAV into the ignored `runtime/ref_audio` directory. That clip defines the speech model's assistant voice. Override `LOCAL_DUPLEX_REF_AUDIO` with another compatible WAV when a different reference voice is required.
 
 The managed Docker Ollama does not reserve host port `11434`. Docker assigns an available loopback port automatically, and `start_local_services.sh` discovers that mapping and configures the Local LLM and embedding URLs. An existing host Ollama can therefore continue listening on `11434` without conflicting with this project. The selected Docker Ollama endpoint is printed during startup.
+
+The managed MiniCPM-o service uses the same pattern for container port `8099`; it receives a random available loopback host port. The browser never connects to that port directly. FastAPI exposes `/api/local/duplex` and proxies a restricted set of PCM16/playback WebSocket events to the private service.
 
 `run.sh` parses `--backend`, `--gpuid`, and `--port` through `parse_options.sh`. `--backend` defaults to `openai`, `--gpuid` defaults to `0`, and `--port` defaults to `7860`. The GPU option selects the NVIDIA device assigned to the Local Ollama container. For example:
 
@@ -117,30 +127,31 @@ The selector changes by mode:
 
 - OpenAI Pipeline lists accessible Responses text models.
 - OpenAI Full Duplex lists accessible Realtime models.
-- Both Local modes share the models reported by the local OpenAI-compatible `/v1/models` endpoint.
+- Local Pipeline lists installed and recommended multilingual Ollama text models.
+- Local Full Duplex uses the separately loaded `openbmb/MiniCPM-o-4_5-GPTQ` speech model.
 
 The Local selector also recommends these popular quantized Ollama models whose published weight sizes fit comfortably within a 24 GB RTX 3090 for this application:
 
 | Model | Ollama size | Intended use |
 |---|---:|---|
-| [`qwen3:8b`](https://ollama.com/library/qwen3:8b) | 5.2 GB | default, multilingual conversation |
-| [`qwen3:14b`](https://ollama.com/library/qwen3:14b) | 9.3 GB | stronger multilingual instruction following |
-| [`llama3.1:8b`](https://ollama.com/library/llama3.1:8b) | 4.9 GB | popular general conversation |
-| [`gemma3:12b`](https://ollama.com/library/gemma3:12b) | 8.1 GB | multilingual general model |
-| [`deepseek-r1:14b`](https://ollama.com/library/deepseek-r1:14b) | 9.0 GB | reasoning model, higher latency |
+| [`qwen3.5:9b`](https://ollama.com/library/qwen3.5:9b) | 6.6 GB | default; 201 languages and dialects |
+| [`qwen3:14b`](https://ollama.com/library/qwen3:14b) | 9.3 GB | mature multilingual instruction following |
+| [`gemma3:12b`](https://ollama.com/library/gemma3:12b) | 8.1 GB | general model supporting 140+ languages |
 
-Only `qwen3:8b` is downloaded during startup, so normal installation remains small. In a Local deployment, select a recommended model and click **設定模型**. The page then:
+The default text choice is based on current published artifacts rather than a hard-coded assumption that every popular model is equally multilingual. Ollama reports `qwen3.5:9b` as a 6.6 GB Q4_K_M artifact with 18.6M downloads and 201 supported languages/dialects. For native speech, the [MiniCPM-o 4.5 GPTQ model card](https://huggingface.co/openbmb/MiniCPM-o-4_5-GPTQ) reports 9B parameters, true concurrent listening/speaking, Chinese/English realtime speech, and about 11 GB of single-GPU INT4 memory use. The larger Qwen3-Omni INT4 result in the same published comparison is about 20.3 GB, leaving too little 24 GB headroom for this combined deployment. The server follows vLLM-Omni's official [MiniCPM-o native-duplex serving recipe](https://docs.vllm.ai/projects/vllm-omni/en/v0.26.0/user_guide/examples/online_serving/minicpmo/).
+
+Only `qwen3.5:9b` is downloaded during startup for text generation. In Local Pipeline, select a recommended model and click **設定模型**. The page then:
 
 1. streams the Ollama download progress;
 2. refreshes the installed-model catalog;
 3. sends an empty Ollama generation request to preload the selected model;
-4. keeps the model ready for 30 minutes by default.
+4. keeps the model ready for 5 minutes by default.
 
-The browser setup endpoint accepts only the configured default, the models already installed on the server, and the five RTX 3090 recommendations listed above. It cannot be used to pull an arbitrary model name.
+The browser setup endpoint accepts only the configured default, the models already installed on the server, and the three 24 GB recommendations listed above. It cannot be used to pull an arbitrary model name. The button is intentionally hidden for Local Full Duplex because its GPTQ speech model is loaded by vLLM-Omni during service startup, not by Ollama.
 
 ### Save the System prompt
 
-Edit the System prompt and click **Save Prompt** to store the current text as the default for the current browser and site origin. This does not write a server-wide file and does not let one visitor change another visitor's default. Language A, Language B, voice, RAG, and tool policies continue to be added separately by the application.
+Edit the System prompt and click **Save Prompt** to store the current text as the default for the current browser and site origin. This does not write a server-wide file and does not let one visitor change another visitor's default. Language and RAG/tool policies continue to be added separately by the application. The Voice selector controls OpenAI TTS/Realtime; Local Full Duplex disables it because MiniCPM-o uses the configured reference WAV instead.
 
 To retain the manual workflow, or when browser model setup is disabled, run:
 
@@ -148,9 +159,16 @@ To retain the manual workflow, or when browser model setup is disabled, run:
 docker compose -f docker-compose.local.yml exec ollama ollama pull qwen3:14b
 ```
 
-Refresh the page after a manual download. The model then appears under **已安裝**. Actual VRAM use also depends on context length and concurrent requests; the application does not select the 19–20 GB Qwen variants by default because their remaining VRAM margin is much smaller.
+Refresh the page after a manual download. The model then appears under **已安裝**. Actual VRAM use also depends on context length, audio-session length and concurrent requests. The Compose defaults cap Ollama at a 4096-token context with one loaded model/one parallel request, and configure the three MiniCPM-o stages for one Full Duplex session with conservative GPU-memory budgets. These limits are deliberate so the 6.6 GB text weights and approximately 11 GB INT4 speech runtime have a practical chance to coexist on a 24 GB card.
 
-For a CPU-only machine, remove the `deploy.resources.reservations.devices` block from `docker-compose.local.yml`. Generation will be much slower.
+If the server has another NVIDIA GPU, isolate the speech model from Ollama for more headroom:
+
+```bash
+export LOCAL_DUPLEX_GPU_ID=1
+./run.sh --backend local --gpuid 0 --port 7860
+```
+
+`--gpuid` selects Ollama's GPU. `LOCAL_DUPLEX_GPU_ID` overrides only MiniCPM-o; when omitted it uses the same GPU. Local Full Duplex requires CUDA and is not supported by the documented CPU-only setup.
 
 To stop the app, press Ctrl-C. To stop local services without deleting data:
 
@@ -172,20 +190,23 @@ export LOCAL_EMBEDDING_BASE_URL="http://127.0.0.1:8001/v1"
 export LOCAL_EMBEDDING_API_KEY="local"
 export LOCAL_EMBEDDING_MODEL="your-embedding-model"
 export QDRANT_URL="http://127.0.0.1:6333"
+export LOCAL_DUPLEX_MODEL="openbmb/MiniCPM-o-4_5-GPTQ"
+export LOCAL_DUPLEX_WS_URL="ws://127.0.0.1:8099/v1/realtime"
+export LOCAL_DUPLEX_REF_AUDIO="/absolute/path/to/reference.wav"
 export MANAGE_LOCAL_SERVICES=0
 ./run.sh --backend local --gpuid 0 --port 7860
 ```
 
-`MANAGE_LOCAL_SERVICES=0` prevents the startup script from launching Docker or pulling Ollama models and disables the browser **設定模型** button by default. This is appropriate for vLLM and other non-Ollama endpoints. Set `ENABLE_LOCAL_MODEL_SETUP=1` only when the configured endpoint is Ollama and its native API is reachable. The frontend reads models reported by the configured endpoint; the RTX 3090 recommendation list is used only as a convenience. `.env.example` lists every override.
+`MANAGE_LOCAL_SERVICES=0` prevents the startup script from launching Docker or pulling Ollama models and disables the browser **設定模型** button by default. In this mode, the administrator must provide both the OpenAI-compatible text/embedding endpoints and a vLLM-Omni native-duplex WebSocket endpoint. Set `ENABLE_LOCAL_MODEL_SETUP=1` only when the text endpoint is Ollama and its native API is reachable. `.env.example` lists every override.
 
 ## RAG file upload
 
 The knowledge card automatically targets the engine selected on the homepage:
 
 - an OpenAI mode uploads to an OpenAI vector store;
-- a Local mode parses and chunks files on the server, obtains embeddings from the local embedding endpoint, and stores vectors in Qdrant.
+- Local Pipeline parses and chunks files on the server, obtains embeddings from the local embedding endpoint, and stores vectors in Qdrant; Local Full Duplex hides this card.
 
-The browser maintains separate signed tokens for the OpenAI and Local knowledge bases across launches. The two OpenAI modes share one cloud knowledge base; the two Local modes share one local knowledge base. A token from one backend is never sent to the other backend.
+The browser maintains separate signed tokens for the OpenAI and Local knowledge bases across launches. The two OpenAI modes share one cloud knowledge base. The Local knowledge base is used by Local Pipeline; native Local Full Duplex hides the RAG controls because that runtime currently has no compatible retrieval tool protocol. A token from one backend is never sent to the other backend.
 
 Each upload accepts up to 10 files and defaults to 20 MB per file and 50 MB per request. OpenAI RAG supports `.doc` in addition to the formats below. Local RAG supports `.docx`, `.pptx`, `.pdf`, `.txt`, `.md`, `.json`, `.html`, `.c`, `.cpp`, `.cs`, `.css`, `.go`, `.java`, `.js`, `.php`, `.py`, `.rb`, `.sh`, `.tex`, and `.ts`.
 
@@ -199,8 +220,8 @@ Important defaults are:
 - Pipeline transcription: `gpt-transcribe`
 - OpenAI TTS: `gpt-4o-mini-tts`
 - OpenAI Full Duplex fallback: `gpt-realtime-2` (the homepage normally selects from the API-provided list)
-- Local Full Duplex streaming ASR: `gpt-live-transcribe`
-- Local LLM: `qwen3:8b`
+- Local Pipeline text LLM: `qwen3.5:9b`
+- Local Full Duplex speech LLM: `openbmb/MiniCPM-o-4_5-GPTQ`
 - Local embedding: `bge-m3`
 - Qdrant: `http://127.0.0.1:6333`
 
@@ -230,8 +251,7 @@ For a stable hostname, create a remotely managed tunnel and configure its public
 - `POST /api/pipeline/turn`: OpenAI Pipeline turn.
 - `POST /api/realtime/session`: OpenAI end-to-end Realtime WebRTC SDP exchange.
 - `POST /api/local/pipeline/turn`: OpenAI ASR/TTS with local RAG and LLM.
-- `POST /api/local/realtime/session`: transcription-only OpenAI Realtime WebRTC SDP exchange.
-- `POST /api/local/realtime/turn`: NDJSON stream containing local LLM text deltas and ordered OpenAI TTS chunks.
+- `WS /api/local/duplex`: restricted same-origin PCM16 proxy to native MiniCPM-o Full Duplex.
 - `POST /api/rag/upload`, `/api/rag/delete`, `/api/rag/search`: OpenAI hosted RAG.
 - `POST /api/local/rag/upload`, `/api/local/rag/delete`: local parsing, embedding, and Qdrant lifecycle.
 - `GET /api/health`, `/api/local/health`: configuration and dependency health.

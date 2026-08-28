@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
@@ -27,7 +27,6 @@ from .core import (
     TurnSettings,
     build_instructions,
     build_realtime_session,
-    build_realtime_transcription_session,
     parse_history,
     transcription_language,
     validate_turn_settings,
@@ -45,8 +44,17 @@ from .local_service import (
     generate_local_reply,
     local_health,
     setup_ollama_model,
-    stream_local_reply,
     upload_local_knowledge_files,
+)
+from .local_duplex import (
+    LOCAL_DUPLEX_LANGUAGES,
+    LOCAL_DUPLEX_MODEL,
+    build_local_duplex_session,
+    local_duplex_health_url,
+    local_duplex_upstream_url,
+    parse_local_duplex_config,
+    reference_audio_data_url,
+    sanitize_local_duplex_client_event,
 )
 from .model_catalog import (
     LOCAL_RECOMMENDED_MODELS,
@@ -70,7 +78,6 @@ REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2")
 REALTIME_TRANSCRIBE_MODEL = os.getenv(
     "OPENAI_REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"
 )
-REALTIME_ASR_MODEL = os.getenv("OPENAI_REALTIME_ASR_MODEL", "gpt-live-transcribe")
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(25 * 1024 * 1024)))
 MAX_RAG_FILE_BYTES = int(os.getenv("MAX_RAG_FILE_BYTES", str(20 * 1024 * 1024)))
 MAX_RAG_TOTAL_BYTES = int(os.getenv("MAX_RAG_TOTAL_BYTES", str(50 * 1024 * 1024)))
@@ -111,7 +118,7 @@ RAG_MIME_TYPES = {
 }
 _VECTOR_STORE_ID_PATTERN = re.compile(r"^vs_[A-Za-z0-9_-]{6,200}$")
 
-app = FastAPI(title="Cloud and Local Voice Chat", version="1.5.0")
+app = FastAPI(title="Cloud and Local Voice Chat", version="2.0.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 _LOCAL_MODEL_SETUP_LOCK = asyncio.Lock()
 
@@ -167,6 +174,17 @@ async def _installed_local_models() -> list[str]:
             and item["id"].strip()
         }
     )
+
+
+async def _local_duplex_status() -> tuple[bool, str | None]:
+    try:
+        url = local_duplex_health_url()
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+        return True, None
+    except Exception as exc:
+        return False, str(exc)[:200]
 
 
 def _binary_content(response: Any) -> bytes:
@@ -506,112 +524,8 @@ def _local_pipeline_turn(
     }
 
 
-async def _tts_segment(segment: str, settings: TurnSettings, api_key: str) -> bytes:
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            "https://api.openai.com/v1/audio/speech",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": PIPELINE_TTS_MODEL,
-                "voice": settings.voice,
-                "input": segment,
-                "instructions": (
-                    f"Speak naturally and clearly in {settings.language_b}. "
-                    "Keep a consistent warm conversational pace."
-                ),
-                "response_format": "mp3",
-            },
-        )
-        response.raise_for_status()
-        return response.content
-
-
 def _ndjson_event(event: dict[str, Any]) -> bytes:
     return (json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-
-
-async def _local_duplex_events(
-    settings: TurnSettings,
-    history: list[dict[str, str]],
-    transcript: str,
-    knowledge_base_id: str | None,
-    api_key: str,
-    llm_model: str,
-):
-    """Stream local text and ordered OpenAI TTS chunks as newline-delimited JSON."""
-
-    output_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    tts_queue: asyncio.Queue[str | None] = asyncio.Queue()
-    reply_parts: list[str] = []
-
-    async def produce_text() -> None:
-        pending_speech = ""
-        try:
-            async for delta in stream_local_reply(
-                settings,
-                history,
-                transcript,
-                knowledge_base_id,
-                llm_model,
-            ):
-                reply_parts.append(delta)
-                pending_speech += delta
-                await output_queue.put({"type": "text_delta", "delta": delta})
-                punctuation = bool(re.search(r"[。！？!?；;.]\s*$", pending_speech))
-                if (punctuation and len(pending_speech) >= 24) or len(pending_speech) >= 260:
-                    await tts_queue.put(pending_speech.strip())
-                    pending_speech = ""
-            if pending_speech.strip():
-                await tts_queue.put(pending_speech.strip())
-        finally:
-            await tts_queue.put(None)
-            await output_queue.put({"type": "text_done"})
-
-    async def produce_audio() -> None:
-        try:
-            while True:
-                segment = await tts_queue.get()
-                if segment is None:
-                    break
-                audio = await _tts_segment(segment, settings, api_key)
-                await output_queue.put(
-                    {
-                        "type": "audio",
-                        "audio_base64": base64.b64encode(audio).decode("ascii"),
-                        "audio_mime": "audio/mpeg",
-                    }
-                )
-        finally:
-            await output_queue.put({"type": "audio_done"})
-
-    text_task = asyncio.create_task(produce_text())
-    audio_task = asyncio.create_task(produce_audio())
-    completed = set()
-    try:
-        while len(completed) < 2:
-            event = await output_queue.get()
-            if event["type"] in {"text_done", "audio_done"}:
-                completed.add(event["type"])
-                continue
-            yield _ndjson_event(event)
-        await text_task
-        await audio_task
-        reply = "".join(reply_parts).strip()
-        if not reply:
-            raise RuntimeError("The local language model returned an empty response")
-        yield _ndjson_event({"type": "done", "reply": reply})
-    except asyncio.CancelledError:
-        text_task.cancel()
-        audio_task.cancel()
-        raise
-    except Exception as exc:
-        LOGGER.exception("Local duplex turn failed")
-        yield _ndjson_event({"type": "error", "message": str(exc)[:500]})
-    finally:
-        for task in (text_task, audio_task):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(text_task, audio_task, return_exceptions=True)
 
 
 async def _local_model_setup_events(model: str, already_installed: bool):
@@ -664,8 +578,8 @@ async def health() -> dict[str, Any]:
             "transcribe": PIPELINE_TRANSCRIBE_MODEL,
             "tts": PIPELINE_TTS_MODEL,
             "realtime": REALTIME_MODEL,
-            "realtime_asr": REALTIME_ASR_MODEL,
             "local_llm": LOCAL_LLM_MODEL,
+            "local_duplex": LOCAL_DUPLEX_MODEL,
             "local_embeddings": LOCAL_EMBEDDING_MODEL,
         },
         "rag": {
@@ -692,11 +606,15 @@ async def model_catalog() -> dict[str, Any]:
     text_models: list[str] = []
     realtime_models: list[str] = []
     installed_local_models: list[str] = []
+    local_duplex_ready = False
 
     if DEPLOYMENT_BACKEND == "local":
-        try:
-            local_result = await _installed_local_models()
-        except Exception:
+        local_result, duplex_result = await asyncio.gather(
+            _installed_local_models(),
+            _local_duplex_status(),
+            return_exceptions=True,
+        )
+        if isinstance(local_result, Exception):
             warnings.append("Local model server is not running; showing recommended RTX 3090 models.")
         else:
             for model_id in local_result:
@@ -704,6 +622,12 @@ async def model_catalog() -> dict[str, Any]:
                     installed_local_models.append(validate_model_id(model_id, LOCAL_LLM_MODEL))
                 except ValueError:
                     continue
+        if isinstance(duplex_result, Exception):
+            warnings.append("Local Full Duplex speech server is unavailable.")
+        else:
+            local_duplex_ready = duplex_result[0]
+            if not local_duplex_ready:
+                warnings.append("Local Full Duplex speech model is still loading or unavailable.")
     else:
         try:
             openai_result = await run_in_threadpool(_openai_models, api_key)
@@ -737,11 +661,12 @@ async def model_catalog() -> dict[str, Any]:
         "defaults": {
             "text": choose_default(text_models, PIPELINE_TEXT_MODEL),
             "realtime": choose_default(realtime_models, REALTIME_MODEL),
-            "local": (
+            "local_text": (
                 LOCAL_LLM_MODEL
                 if LOCAL_LLM_MODEL in installed_local_models or not installed_local_models
                 else installed_local_models[0]
             ),
+            "local_duplex": LOCAL_DUPLEX_MODEL,
         },
         "openai": {
             "text": text_models,
@@ -751,6 +676,12 @@ async def model_catalog() -> dict[str, Any]:
             "installed": sorted(set(installed_local_models)),
             "recommended": list(LOCAL_RECOMMENDED_MODELS),
             "setup_enabled": ENABLE_LOCAL_MODEL_SETUP,
+            "duplex": {
+                "model": LOCAL_DUPLEX_MODEL,
+                "ready": local_duplex_ready,
+                "languages": sorted(LOCAL_DUPLEX_LANGUAGES),
+                "note": "原生中英文 Speech-to-Speech；不使用 Ollama、OpenAI ASR 或 OpenAI TTS。",
+            },
         },
         "warnings": warnings,
     }
@@ -787,7 +718,14 @@ async def local_model_setup(model: str = Form(...)) -> StreamingResponse:
 @app.get("/api/local/health")
 async def local_services_health() -> dict[str, Any]:
     _require_backend("local")
-    return await local_health()
+    result, duplex = await asyncio.gather(local_health(), _local_duplex_status())
+    result["duplex"] = {
+        "ok": duplex[0],
+        "model": LOCAL_DUPLEX_MODEL,
+        "error": duplex[1],
+    }
+    result["ok"] = bool(result["ok"] and duplex[0])
+    return result
 
 
 @app.post("/api/rag/upload", response_class=JSONResponse)
@@ -1118,76 +1056,85 @@ async def realtime_session(
     return PlainTextResponse(response.text, media_type="application/sdp")
 
 
-@app.post("/api/local/realtime/session", response_class=PlainTextResponse)
-async def local_realtime_transcription_session(
-    sdp: str = Form(...),
-    system_prompt: str = Form(""),
-    language_a: str = Form("zh-TW"),
-    language_b: str = Form("en"),
-    voice: str = Form("marin"),
-    rag_token: str = Form(""),
-) -> PlainTextResponse:
-    _require_backend("local")
-    if not sdp.strip() or len(sdp) > 200_000:
-        raise HTTPException(status_code=400, detail="Invalid SDP offer")
-    settings = _settings(system_prompt, language_a, language_b, voice)
-    api_key = _api_key()
-    # Validate the local token before opening a metered ASR session.
-    _optional_local_knowledge_base_id(rag_token, api_key)
-    session = build_realtime_transcription_session(settings, REALTIME_ASR_MODEL)
-    files = {
-        "sdp": (None, sdp, "application/sdp"),
-        "session": (None, json.dumps(session), "application/json"),
-    }
+@app.websocket("/api/local/duplex")
+async def local_duplex_proxy(browser: WebSocket) -> None:
+    """Proxy bounded PCM16 events to the private MiniCPM-o native-duplex runtime."""
+
+    await browser.accept()
+    if DEPLOYMENT_BACKEND != "local":
+        await browser.send_json(
+            {"type": "error", "error": {"message": "Local Full Duplex is unavailable"}}
+        )
+        await browser.close(code=1008)
+        return
+
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/realtime/calls",
-                headers={"Authorization": f"Bearer {api_key}"},
-                files=files,
+        raw_config = await asyncio.wait_for(browser.receive_text(), timeout=10.0)
+        config = parse_local_duplex_config(raw_config)
+        if _model_id(config["llm_model"], LOCAL_DUPLEX_MODEL) != LOCAL_DUPLEX_MODEL:
+            raise ValueError("The selected Local Full Duplex model is unavailable")
+        settings = _settings(
+            config["system_prompt"],
+            config["language_a"],
+            config["language_b"],
+            config["voice"] or "marin",
+        )
+        ref_audio = await asyncio.to_thread(reference_audio_data_url)
+        session_update = build_local_duplex_session(settings, ref_audio)
+        upstream_url = local_duplex_upstream_url()
+    except (ValueError, FileNotFoundError, HTTPException, asyncio.TimeoutError) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        await browser.send_json({"type": "error", "error": {"message": detail[:500]}})
+        await browser.close(code=1008)
+        return
+
+    try:
+        import websockets
+
+        async with websockets.connect(
+            upstream_url,
+            open_timeout=30.0,
+            ping_interval=20.0,
+            ping_timeout=30.0,
+            max_size=16 * 1024 * 1024,
+        ) as upstream:
+            await upstream.send(json.dumps(session_update, separators=(",", ":")))
+
+            async def browser_to_model() -> None:
+                while True:
+                    raw_event = await browser.receive_text()
+                    await upstream.send(sanitize_local_duplex_client_event(raw_event))
+
+            async def model_to_browser() -> None:
+                async for raw_event in upstream:
+                    if not isinstance(raw_event, str):
+                        raise ValueError("The speech server returned a non-JSON event")
+                    if len(raw_event) > 16 * 1024 * 1024:
+                        raise ValueError("The speech server returned an oversized event")
+                    await browser.send_text(raw_event)
+
+            tasks = {
+                asyncio.create_task(browser_to_model()),
+                asyncio.create_task(model_to_browser()),
+            }
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                task.result()
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        LOGGER.warning("Local Full Duplex proxy ended: %s", str(exc)[:300])
+        try:
+            await browser.send_json(
+                {"type": "error", "error": {"message": f"Local speech server error: {str(exc)[:300]}"}}
             )
-    except httpx.HTTPError as exc:
-        LOGGER.exception("Realtime transcription SDP exchange failed")
-        raise HTTPException(status_code=502, detail="Could not reach OpenAI Realtime ASR") from exc
-    if response.is_error:
-        detail = _safe_upstream_detail(response)
-        LOGGER.error("Realtime transcription session rejected: %s", detail)
-        raise HTTPException(status_code=502, detail=detail)
-    return PlainTextResponse(response.text, media_type="application/sdp")
-
-
-@app.post("/api/local/realtime/turn")
-async def local_realtime_turn(
-    transcript: str = Form(...),
-    system_prompt: str = Form(""),
-    language_a: str = Form("zh-TW"),
-    language_b: str = Form("en"),
-    voice: str = Form("marin"),
-    llm_model: str = Form(LOCAL_LLM_MODEL),
-    history_json: str = Form("[]"),
-    rag_token: str = Form(""),
-) -> StreamingResponse:
-    _require_backend("local")
-    clean_transcript = transcript.strip()
-    if not clean_transcript or len(clean_transcript) > 8_000:
-        raise HTTPException(status_code=422, detail="Invalid transcript")
-    settings = _settings(system_prompt, language_a, language_b, voice)
-    local_model = _model_id(llm_model, LOCAL_LLM_MODEL)
-    api_key = _api_key()
-    knowledge_base_id = _optional_local_knowledge_base_id(rag_token, api_key)
-    try:
-        history = parse_history(history_json)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return StreamingResponse(
-        _local_duplex_events(
-            settings,
-            history,
-            clean_transcript,
-            knowledge_base_id,
-            api_key,
-            local_model,
-        ),
-        media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-    )
+        except Exception:
+            pass
+    finally:
+        try:
+            await browser.close()
+        except Exception:
+            pass
