@@ -1,1 +1,10 @@
+config*
+assets*
+demos
+
+.env
+.venv/
+__pycache__/
+*.py[cod]
+
 runtime/
