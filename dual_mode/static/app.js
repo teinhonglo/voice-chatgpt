@@ -1002,7 +1002,10 @@ function handleLocalDuplexEvent(event) {
     return;
   }
   if (type === "error") {
-    setStatus(`Local Full Duplex 錯誤：${event.error?.message || event.message || "未知錯誤"}`, "error");
+    const message = typeof event.error === "string"
+      ? event.error
+      : event.error?.message || event.message || "未知錯誤";
+    setStatus(`Local Full Duplex 錯誤：${message}`, "error");
   }
 }
 
@@ -1038,7 +1041,10 @@ async function startLocalDuplex() {
             resolve();
           } else if (event.type === "error") {
             window.clearTimeout(timeout);
-            reject(new Error(event.error?.message || event.message || "MiniCPM-o session 建立失敗"));
+            const message = typeof event.error === "string"
+              ? event.error
+              : event.error?.message || event.message || "MiniCPM-o session 建立失敗";
+            reject(new Error(message));
           }
         } catch { /* diagnostic event */ }
       });
