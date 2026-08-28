@@ -220,6 +220,19 @@ class CoreTests(unittest.TestCase):
         self.assertIn('id="prompt-save-button"', index_html)
         self.assertIn("PROMPT_DEFAULT_STORAGE_KEY", app_js)
 
+    def test_local_duplex_uses_cuda12_compatible_vllm_build(self):
+        compose = Path("docker-compose.local.yml").read_text(encoding="utf-8")
+        dockerfile = Path("Dockerfile.minicpmo").read_text(encoding="utf-8")
+        startup = Path("start_local_services.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn("vllm/vllm-omni:v0.26.0post1", compose)
+        self.assertIn("Dockerfile.minicpmo", compose)
+        self.assertIn("NVIDIA_DISABLE_REQUIRE", compose)
+        self.assertIn("vllm/vllm-openai:v0.26.0-cu129", dockerfile)
+        self.assertIn("VLLM_OMNI_REF=v0.26.0", dockerfile)
+        self.assertIn("525.60.13", startup)
+        self.assertIn('up -d --build', startup)
+
 
 class _FakeOllamaResponse:
     is_error = False

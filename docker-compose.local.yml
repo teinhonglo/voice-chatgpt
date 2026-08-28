@@ -19,7 +19,12 @@ services:
               capabilities: [gpu]
 
   minicpmo:
-    image: vllm/vllm-omni:v0.26.0post1.20260811
+    build:
+      context: .
+      dockerfile: Dockerfile.minicpmo
+      args:
+        VLLM_BASE_IMAGE: "${LOCAL_DUPLEX_BASE_IMAGE:-vllm/vllm-openai:v0.26.0-cu129}"
+        VLLM_OMNI_REF: "${LOCAL_DUPLEX_VLLM_OMNI_REF:-v0.26.0}"
     restart: unless-stopped
     ipc: host
     ports:
@@ -28,13 +33,16 @@ services:
       - huggingface_cache:/root/.cache/huggingface
     environment:
       HF_TOKEN: "${HF_TOKEN:-}"
+      # CUDA 12.x minor-version compatibility is supported by NVIDIA drivers
+      # from R525 onward. start_local_services.sh enables this only on R525-R579.
+      NVIDIA_DISABLE_REQUIRE: "${LOCAL_DUPLEX_DISABLE_CUDA_REQUIRE:-false}"
     entrypoint: ["vllm-omni"]
     command:
       - serve
       - "${LOCAL_DUPLEX_MODEL:-openbmb/MiniCPM-o-4_5-GPTQ}"
       - --omni
       - --deploy-config
-      - vllm_omni/deploy/minicpmo_4_5_duplex.yaml
+      - /app/vllm-omni/vllm_omni/deploy/minicpmo_4_5_duplex.yaml
       - --stage-overrides
       - '{"0":{"gpu_memory_utilization":0.38,"max_num_seqs":1},"1":{"gpu_memory_utilization":0.08,"max_num_seqs":1,"kv_cache_memory_bytes":1073741824},"2":{"gpu_memory_utilization":0.08,"max_num_seqs":1}}'
       - --trust-remote-code

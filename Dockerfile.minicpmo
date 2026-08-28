@@ -1,0 +1,21 @@
+ARG VLLM_BASE_IMAGE=vllm/vllm-openai:v0.26.0-cu129
+FROM ${VLLM_BASE_IMAGE}
+
+ARG VLLM_OMNI_REF=v0.26.0
+ARG VLLM_OMNI_REPOSITORY=https://github.com/vllm-project/vllm-omni.git
+
+USER root
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git jq \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone --branch "${VLLM_OMNI_REF}" --depth 1 \
+        "${VLLM_OMNI_REPOSITORY}" /app/vllm-omni \
+    && uv pip install \
+        --python "$(python3 -c 'import sys; print(sys.executable)')" \
+        --no-cache-dir /app/vllm-omni \
+    && rm -rf /app/vllm-omni/.git
+
+WORKDIR /app/vllm-omni
+ENTRYPOINT []

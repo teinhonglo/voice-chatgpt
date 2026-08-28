@@ -87,6 +87,7 @@ Requirements:
 
 - Docker with the Compose plugin
 - NVIDIA Container Toolkit for the GPU configuration in `docker-compose.local.yml`
+- NVIDIA driver 525.60.13 or newer (CUDA 13 / R580 is not required)
 - a 24 GB NVIDIA GPU (RTX 3090-class) for the documented quantized defaults
 - enough disk for the vLLM-Omni image, Qwen text weights, MiniCPM-o GPTQ weights, and Hugging Face cache
 - an OpenAI API key for the Local Pipeline ASR/TTS path
@@ -98,7 +99,13 @@ export OPENAI_API_KEY="sk-..."
 
 Use `BACKEND=local` for the two Local modes. It starts the local dependencies and hides the OpenAI-only modes. Use `BACKEND=openai` for the two OpenAI modes; it neither starts nor probes local dependencies.
 
-Local startup activates `voice-chatgpt-local`, starts Ollama, Qdrant and vLLM-Omni, downloads `qwen3.5:9b` and `bge-m3` when missing, and loads `openbmb/MiniCPM-o-4_5-GPTQ`. The first launch can take several minutes because the official vLLM-Omni image and Hugging Face model are large. `LOCAL_DUPLEX_STARTUP_TIMEOUT_SECONDS` defaults to 900 seconds. Set `SKIP_LOCAL_MODEL_PULL=1` to skip only the Ollama model checks. Model data and Qdrant collections use named Docker volumes, so they survive restarts. Check all local dependencies at <http://localhost:7860/api/local/health>.
+Local startup activates `voice-chatgpt-local`, starts Ollama, Qdrant and vLLM-Omni, downloads `qwen3.5:9b` and `bge-m3` when missing, and loads `openbmb/MiniCPM-o-4_5-GPTQ`. The first launch builds the MiniCPM-o service from the official `vllm/vllm-openai:v0.26.0-cu129` base and the matching vLLM-Omni `v0.26.0` source, then downloads the Hugging Face model. It is large and can take several minutes; later starts reuse Docker's build cache and named model volumes. `LOCAL_DUPLEX_STARTUP_TIMEOUT_SECONDS` defaults to 900 seconds. Set `SKIP_LOCAL_MODEL_PULL=1` to skip only the Ollama model checks. Check all local dependencies at <http://localhost:7860/api/local/health>.
+
+The `-cu129` base is intentional. The unsuffixed vLLM 0.26 image requires CUDA 13 and an R580-or-newer driver. NVIDIA documents CUDA 12.x minor-version compatibility for Linux drivers from 525.60.13 through R579, so `start_local_services.sh` checks the selected GPU's driver before Docker starts and enables compatibility mode only in that range. This supports an RTX 3090 without blindly upgrading the host to CUDA 13. Verify the selected GPU and driver with:
+
+```bash
+nvidia-smi --id=2 --query-gpu=name,driver_version --format=csv,noheader
+```
 
 The startup script also downloads MiniCPM-o's official reference WAV into the ignored `runtime/ref_audio` directory. That clip defines the speech model's assistant voice. Override `LOCAL_DUPLEX_REF_AUDIO` with another compatible WAV when a different reference voice is required.
 

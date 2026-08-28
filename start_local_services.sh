@@ -36,6 +36,45 @@ if [[ ! "${local_duplex_timeout}" =~ ^[0-9]+$ ]] || (( local_duplex_timeout < 30
   return 2 2>/dev/null || exit 2
 fi
 
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "nvidia-smi is required for the managed Local GPU services." >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+duplex_gpu_id="${LOCAL_DUPLEX_GPU_ID:-${LOCAL_GPU_ID:-0}}"
+duplex_driver_version="$(
+  nvidia-smi --id="${duplex_gpu_id}" \
+    --query-gpu=driver_version --format=csv,noheader 2>/dev/null \
+    | head -n 1 | tr -d '[:space:]'
+)"
+if [[ "${duplex_driver_version}" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
+  driver_major="${BASH_REMATCH[1]}"
+  driver_minor="${BASH_REMATCH[2]}"
+  driver_patch="${BASH_REMATCH[4]:-0}"
+else
+  echo "GPU ${duplex_gpu_id} is unavailable or its NVIDIA driver version could not be read." >&2
+  return 1 2>/dev/null || exit 1
+fi
+if (( driver_major < 525 \
+      || (driver_major == 525 && driver_minor < 60) \
+      || (driver_major == 525 && driver_minor == 60 && driver_patch < 13) )); then
+  echo "MiniCPM-o requires NVIDIA driver 525.60.13 or newer for CUDA 12.x compatibility; GPU ${duplex_gpu_id} uses ${duplex_driver_version}." >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+# The vLLM 0.26 CUDA 12.9 build can run on R525-R579 through NVIDIA's
+# documented CUDA 12.x minor-version compatibility. The container image's
+# conservative cuda>=12.9 metadata would otherwise reject those drivers before
+# vLLM starts, so disable only that metadata check in the supported range.
+if (( driver_major < 580 )); then
+  export LOCAL_DUPLEX_DISABLE_CUDA_REQUIRE=true
+  echo "Using GPU ${duplex_gpu_id} with NVIDIA driver ${duplex_driver_version} in CUDA 12.x compatibility mode."
+else
+  export LOCAL_DUPLEX_DISABLE_CUDA_REQUIRE=false
+  echo "Using GPU ${duplex_gpu_id} with NVIDIA driver ${duplex_driver_version}."
+fi
+unset driver_major driver_minor driver_patch
+
 if [[ ! -s "${ref_audio_path}" ]]; then
   if ! command -v curl >/dev/null 2>&1; then
     echo "curl is required to download the MiniCPM-o reference voice." >&2
@@ -48,9 +87,9 @@ fi
 
 export LOCAL_DUPLEX_MODEL="${local_duplex_model}"
 export LOCAL_DUPLEX_REF_AUDIO="${ref_audio_path}"
-export LOCAL_DUPLEX_GPU_ID="${LOCAL_DUPLEX_GPU_ID:-${LOCAL_GPU_ID:-0}}"
+export LOCAL_DUPLEX_GPU_ID="${duplex_gpu_id}"
 
-docker compose -f "${compose_file}" up -d
+docker compose -f "${compose_file}" up -d --build
 
 ollama_host_binding="$(
   docker compose -f "${compose_file}" port ollama 11434 2>/dev/null | head -n 1
