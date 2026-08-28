@@ -10,34 +10,22 @@ MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 
 LOCAL_RECOMMENDED_MODELS: tuple[dict[str, str], ...] = (
     {
-        "id": "qwen3:8b",
-        "label": "Qwen 3 8B",
-        "size": "5.2 GB",
-        "note": "預設，多語與中英文對話",
+        "id": "qwen3.5:9b",
+        "label": "Qwen 3.5 9B",
+        "size": "6.6 GB",
+        "note": "預設，201 種語言／方言",
     },
     {
         "id": "qwen3:14b",
         "label": "Qwen 3 14B",
         "size": "9.3 GB",
-        "note": "較強的多語與指令遵循",
-    },
-    {
-        "id": "llama3.1:8b",
-        "label": "Llama 3.1 8B",
-        "size": "4.9 GB",
-        "note": "熱門通用對話模型",
+        "note": "成熟的多語與指令遵循",
     },
     {
         "id": "gemma3:12b",
         "label": "Gemma 3 12B",
         "size": "8.1 GB",
-        "note": "多語通用模型",
-    },
-    {
-        "id": "deepseek-r1:14b",
-        "label": "DeepSeek-R1 14B",
-        "size": "9.0 GB",
-        "note": "推理型，回答延遲較高",
+        "note": "140+ 語言的通用模型",
     },
 )
 

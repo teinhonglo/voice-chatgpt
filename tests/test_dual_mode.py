@@ -11,9 +11,17 @@ from dual_mode.core import (
     RAG_TOOL_NAME,
     build_instructions,
     build_realtime_session,
-    build_realtime_transcription_session,
     parse_history,
     validate_turn_settings,
+)
+from dual_mode.local_duplex import (
+    LOCAL_DUPLEX_MODEL,
+    build_local_duplex_session,
+    local_duplex_health_url,
+    local_duplex_upstream_url,
+    parse_local_duplex_config,
+    sanitize_local_duplex_client_event,
+    validate_local_duplex_languages,
 )
 from dual_mode.local_service import (
     chunk_text,
@@ -97,18 +105,49 @@ class CoreTests(unittest.TestCase):
             session["tools"][0]["parameters"]["additionalProperties"]
         )
 
-    def test_local_duplex_uses_transcription_only_realtime_session(self):
+    def test_local_duplex_uses_native_bilingual_speech_session(self):
         settings = validate_turn_settings("Help.", "zh-TW", "en", "marin")
-        session = build_realtime_transcription_session(settings, "gpt-live-transcribe")
+        session = build_local_duplex_session(settings, "data:audio/wav;base64,AAAA")
 
-        self.assertEqual(session["type"], "transcription")
+        self.assertEqual(session["type"], "session.update")
+        self.assertEqual(session["session"]["model"], LOCAL_DUPLEX_MODEL)
+        self.assertEqual(session["session"]["modalities"], ["audio", "text"])
+        self.assertEqual(session["session"]["input_audio_format"], "pcm16")
+        self.assertTrue(session["session"]["extra_body"]["minicpmo45_native_duplex"])
+        self.assertIn("Always answer in English", session["session"]["instructions"])
+
+        unsupported = validate_turn_settings("Help.", "ja", "en", "marin")
+        with self.assertRaises(ValueError):
+            validate_local_duplex_languages(unsupported)
+
+    def test_local_duplex_url_and_public_event_guard(self):
         self.assertEqual(
-            session["audio"]["input"]["transcription"]["model"],
-            "gpt-live-transcribe",
+            local_duplex_health_url("ws://127.0.0.1:32790/v1/realtime"),
+            "http://127.0.0.1:32790/health",
         )
-        self.assertEqual(session["audio"]["input"]["transcription"]["language"], "zh")
-        self.assertEqual(session["audio"]["input"]["turn_detection"]["type"], "server_vad")
-        self.assertNotIn("output", session["audio"])
+        upstream = local_duplex_upstream_url("ws://127.0.0.1:32790/v1/realtime?duplex=1")
+        self.assertIn("model=openbmb/MiniCPM-o-4_5-GPTQ", upstream)
+        self.assertIn("minicpmo45_native_duplex=1", upstream)
+
+        config = parse_local_duplex_config(json.dumps({
+            "type": "voice_chat.configure",
+            "system_prompt": "Tutor",
+            "language_a": "zh-TW",
+            "language_b": "en",
+            "voice": "marin",
+            "llm_model": LOCAL_DUPLEX_MODEL,
+        }))
+        self.assertEqual(config["llm_model"], LOCAL_DUPLEX_MODEL)
+        clean = json.loads(sanitize_local_duplex_client_event(json.dumps({
+            "type": "input_audio_buffer.append",
+            "audio": "AAAA",
+            "sample_rate_hz": 999,
+            "duration_ms": 200,
+            "audio_end_ms": 200,
+        })))
+        self.assertEqual(clean["sample_rate_hz"], 16000)
+        with self.assertRaises(ValueError):
+            sanitize_local_duplex_client_event('{"type":"session.update"}')
 
     def test_local_rag_token_is_scoped_and_tamper_evident(self):
         knowledge_base_id = "a" * 32
@@ -152,9 +191,9 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual(ordered[0], "gpt-5.6-luna")
         self.assertEqual(choose_default(ordered, "gpt-5.6-luna"), "gpt-5.6-luna")
-        self.assertEqual(validate_model_id("qwen3:14b", "qwen3:8b"), "qwen3:14b")
+        self.assertEqual(validate_model_id("qwen3:14b", "qwen3.5:9b"), "qwen3:14b")
         with self.assertRaises(ValueError):
-            validate_model_id("../../bad model", "qwen3:8b")
+            validate_model_id("../../bad model", "qwen3.5:9b")
 
     def test_ollama_native_api_uses_the_dynamic_openai_compatible_port(self):
         self.assertEqual(
@@ -175,6 +214,9 @@ class CoreTests(unittest.TestCase):
         self.assertIn('id="model-setup-button"', index_html)
         self.assertIn('id="model-progress"', index_html)
         self.assertIn('fetch("/api/local/models/setup"', app_js)
+        self.assertIn("/api/local/duplex", app_js)
+        self.assertIn("input_audio_buffer.append", app_js)
+        self.assertNotIn("/api/local/realtime/turn", app_js)
         self.assertIn('id="prompt-save-button"', index_html)
         self.assertIn("PROMPT_DEFAULT_STORAGE_KEY", app_js)
 
@@ -246,7 +288,7 @@ class LocalModelSetupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.calls[0][1].endswith("/api/pull"))
         self.assertTrue(client.calls[-1][1].endswith("/api/generate"))
         self.assertNotIn("prompt", client.calls[-1][2])
-        self.assertEqual(client.calls[-1][2]["keep_alive"], "30m")
+        self.assertEqual(client.calls[-1][2]["keep_alive"], "5m")
 
 
 if __name__ == "__main__":

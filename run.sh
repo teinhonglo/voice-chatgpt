@@ -11,7 +11,7 @@ help_message="Usage: $0 [options]
 
 Options:
   --backend <openai|local>  Backend to expose (default: ${backend})
-  --gpuid <id>              NVIDIA GPU index for Local Ollama (default: ${gpuid})
+  --gpuid <id>              NVIDIA GPU index for Local Ollama/MiniCPM-o (default: ${gpuid})
   --port <1-65535>          Web server port (default: ${port})
   --help                    Show this help message"
 
@@ -37,6 +37,7 @@ fi
 export BACKEND="${backend}"
 export GPUID="${gpuid}"
 export LOCAL_GPU_ID="${gpuid}"
+export LOCAL_DUPLEX_GPU_ID="${LOCAL_DUPLEX_GPU_ID:-${gpuid}}"
 export PORT="${port}"
 
 # shellcheck source=path.sh

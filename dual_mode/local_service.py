@@ -1,8 +1,4 @@
-"""Local LLM and Qdrant helpers for the hybrid voice modes.
-
-Audio remains on OpenAI ASR/TTS.  Prompts, retrieval, embeddings, and answer
-generation use endpoints configured on the same machine or private network.
-"""
+"""Local text LLM and Qdrant helpers for the recorded-turn Pipeline mode."""
 
 from __future__ import annotations
 
@@ -26,7 +22,7 @@ from .core import TurnSettings, build_instructions
 
 LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
 LOCAL_LLM_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "local")
-LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen3:8b")
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen3.5:9b")
 
 
 def ollama_native_base_url(openai_base_url: str) -> str:
@@ -45,7 +41,7 @@ OLLAMA_BASE_URL = os.getenv(
     "OLLAMA_BASE_URL",
     ollama_native_base_url(LOCAL_LLM_BASE_URL),
 ).rstrip("/")
-LOCAL_MODEL_KEEP_ALIVE = os.getenv("LOCAL_MODEL_KEEP_ALIVE", "30m").strip() or "30m"
+LOCAL_MODEL_KEEP_ALIVE = os.getenv("LOCAL_MODEL_KEEP_ALIVE", "5m").strip() or "5m"
 LOCAL_EMBEDDING_BASE_URL = os.getenv(
     "LOCAL_EMBEDDING_BASE_URL", LOCAL_LLM_BASE_URL
 ).rstrip("/")
@@ -430,32 +426,6 @@ def generate_local_reply(
     if not reply:
         raise RuntimeError("The local language model returned an empty response")
     return reply, results
-
-
-async def stream_local_reply(
-    settings: TurnSettings,
-    history: list[dict[str, str]],
-    transcript: str,
-    knowledge_base_id: str | None,
-    model: str = LOCAL_LLM_MODEL,
-) -> AsyncIterator[str]:
-    from openai import AsyncOpenAI
-
-    results: list[dict[str, Any]] = []
-    if knowledge_base_id:
-        # The sync OpenAI-compatible embedding client and Qdrant request run in a worker.
-        results = await asyncio.to_thread(search_local_knowledge_base, knowledge_base_id, transcript)
-    async with AsyncOpenAI(base_url=LOCAL_LLM_BASE_URL, api_key=LOCAL_LLM_API_KEY) as client:
-        stream = await client.chat.completions.create(
-            model=model,
-            messages=local_chat_messages(settings, history, transcript, results),
-            temperature=0.2,
-            stream=True,
-        )
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content if chunk.choices else None
-            if delta:
-                yield delta
 
 
 async def local_health() -> dict[str, Any]:

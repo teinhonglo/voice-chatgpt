@@ -248,32 +248,3 @@ def build_realtime_session(
 
     return session
 
-
-def build_realtime_transcription_session(
-    settings: TurnSettings,
-    transcription_model: str,
-) -> dict[str, Any]:
-    """Create a transcription-only WebRTC session for local duplex mode.
-
-    OpenAI provides streaming ASR and VAD events, while the application owns
-    retrieval, local model generation, TTS requests, playback, and interruption.
-    """
-
-    return {
-        "type": "transcription",
-        "audio": {
-            "input": {
-                "transcription": {
-                    "model": transcription_model,
-                    "language": transcription_language(settings.language_a),
-                },
-                "noise_reduction": {"type": "near_field"},
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500,
-                },
-            }
-        },
-    }
