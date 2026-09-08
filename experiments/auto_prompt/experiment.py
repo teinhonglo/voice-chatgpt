@@ -639,13 +639,13 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         valset=valset,
         objective=objective,
         config=GEPAConfig(
-            reflection_lm=reflection_lm,
             engine=EngineConfig(
                 max_metric_calls=args.max_metric_calls,
                 parallel=False,
                 cache_evaluation=True,
             ),
             reflection=ReflectionConfig(
+                reflection_lm=reflection_lm,
                 reflection_minibatch_size=args.reflection_minibatch_size,
             ),
         ),
