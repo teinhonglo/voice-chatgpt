@@ -11,12 +11,12 @@ The production WebRTC UI is intentionally left unchanged. During prompt search, 
 ## Method
 
 1. Run the existing Text-LLM tutor with the original prompt and cache reference responses.
-2. Directly transfer the same prompt to GPT-Realtime and measure the migration gap.
+2. Directly transfer the same prompt to GPT-Realtime and measure the migration gap on the dev split.
 3. Use GEPA to evolve only the system prompt. The original text-tutor prompt is the seed.
 4. For every candidate, run the same tutoring scenarios on GPT-Realtime.
 5. An independent GPT-5.6 Sol judge scores instruction adherence, source-behavior preservation, pedagogical quality, answer control, guidance, coherence, tone, and human-likeness.
 6. Feed both the scalar score and diagnostic feedback back to GEPA.
-7. Select on the dev split and report final results on the held-out test split.
+7. Select on the dev split. Only after prompt selection, compare direct transfer and the adapted prompt on the held-out test split.
 
 The evaluator is inspired by MRBench / Unifying AI Tutor Evaluation (NAACL 2025). It adds behavior_preservation because prompt migration should preserve the source tutor's teaching action, not its exact wording. A deterministic or judge-detected hard-constraint violation forces the optimization score to zero.
 
@@ -50,7 +50,7 @@ Supported deterministic hard constraints are max_questions, max_chars, and forbi
 ## Run
 
     export OPENAI_API_KEY="sk-..."
-    experiments/auto_prompt/run.sh \
+    bash experiments/auto_prompt/run.sh \
       --source_model gpt-5.6-luna \
       --target_model gpt-realtime-2 \
       --judge_model gpt-5.6-sol \
@@ -59,23 +59,23 @@ Supported deterministic hard constraints are max_questions, max_chars, and forbi
 
 To adapt your actual prompt:
 
-    experiments/auto_prompt/run.sh \
+    bash experiments/auto_prompt/run.sh \
       --source_prompt /path/to/your_text_tutor_system_prompt.txt
 
 The wrapper follows the repository's stage/stop_stage convention:
 
     # Only generate source references
-    experiments/auto_prompt/run.sh --stage 0 --stop_stage 0
+    bash experiments/auto_prompt/run.sh --stage 0 --stop_stage 0
 
     # Re-run optimization when references already exist
-    experiments/auto_prompt/run.sh --stage 2 --stop_stage 3
+    bash experiments/auto_prompt/run.sh --stage 2 --stop_stage 3
 
 ## Stages
 
 - 0: Generate source Text-LLM reference responses.
-- 1: Evaluate direct transfer of the source prompt to GPT-Realtime.
+- 1: Evaluate direct transfer of the source prompt on the dev split.
 - 2: Optimize the Realtime prompt with GEPA.
-- 3: Evaluate the selected prompt on held-out test scenarios.
+- 3: Compare the direct-transfer baseline and selected prompt on held-out test scenarios.
 
 ## Search score
 
