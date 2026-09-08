@@ -666,7 +666,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     best_path = output_dir / "best_system_prompt.txt"
     best_path.write_text(best_prompt.strip() + "\n", encoding="utf-8")
 
-    test_rows = [row for row in rows if row.get("split") == "test"]
     summary: dict[str, Any] = {
         "source_model": cfg.source_model,
         "target_model": cfg.target_model,
@@ -676,29 +675,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         "source_prompt_chars": len(source_prompt),
         "best_prompt_chars": len(best_prompt),
         "best_system_prompt": str(best_path),
+        "best_validation_score": getattr(result, "best_score", None),
     }
-    if test_rows:
-        test_outputs, test_summary = evaluate_split(
-            best_prompt,
-            test_rows,
-            cfg,
-            judge_repeats=args.final_judge_repeats,
-        )
-        write_jsonl(output_dir / "test_results.jsonl", test_outputs)
-        summary["test"] = test_summary
-
-        baseline_outputs, baseline_summary = evaluate_split(
-            source_prompt,
-            test_rows,
-            cfg,
-            judge_repeats=args.final_judge_repeats,
-        )
-        write_jsonl(output_dir / "direct_transfer_test_results.jsonl", baseline_outputs)
-        summary["direct_transfer_test"] = baseline_summary
-        summary["test_gain"] = (
-            test_summary["mean_score"] - baseline_summary["mean_score"]
-        )
-
     (output_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
