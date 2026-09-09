@@ -143,7 +143,7 @@ def main() -> None:
     dev = load_trajectories(config["data_path"], split="dev")
 
     judge_client = OpenAI()
-    train_by_id = {item.trajectory_id: item for item in train}
+    trajectory_by_id = {item.trajectory_id: item for item in [*train, *dev]}
 
     print("Evaluating direct-transfer prompt on dev trajectories...")
     direct_dev = evaluate_split(
@@ -156,7 +156,7 @@ def main() -> None:
 
     def evaluator(candidate: str, example: dict[str, Any]) -> tuple[float, dict[str, Any]]:
         prompt = _candidate_text(candidate)
-        trajectory = train_by_id[str(example["trajectory_id"])]
+        trajectory = trajectory_by_id[str(example["trajectory_id"])]
         try:
             score, details, _ = _run_and_judge(
                 prompt=prompt,
