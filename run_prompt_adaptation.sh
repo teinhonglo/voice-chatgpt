@@ -154,6 +154,7 @@ echo
 echo "Done."
 echo "Final prompt:        $output_dir/system_prompt.full_duplex.txt"
 echo "Optimization report: $output_dir/optimization_report.json"
-echo "Test report:         $output_dir/test_evaluation.json"
+echo "Test JSON:           $output_dir/test_evaluation.json"
+echo "Readable report:     $output_dir/test_report.md"
 echo "Logs:                $log_dir/"
 echo "GEPA intermediates:  $output_dir/gepa/"
