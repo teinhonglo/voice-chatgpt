@@ -50,14 +50,26 @@ class RealtimeEpisodeClient:
         model: str,
         voice: str,
         reasoning_effort: str,
-        max_output_tokens: int,
+        max_output_tokens: int | str,
         api_key: str | None = None,
         timeout: float = 120.0,
     ) -> None:
         self.model = model
         self.voice = voice
         self.reasoning_effort = reasoning_effort
-        self.max_output_tokens = int(max_output_tokens)
+        if isinstance(max_output_tokens, str):
+            if max_output_tokens != "inf":
+                raise ValueError(
+                    "max_output_tokens must be an integer in [1, 4096] or 'inf'"
+                )
+            self.max_output_tokens: int | str = "inf"
+        else:
+            value = int(max_output_tokens)
+            if not 1 <= value <= 4096:
+                raise ValueError(
+                    "max_output_tokens must be an integer in [1, 4096] or 'inf'"
+                )
+            self.max_output_tokens = value
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY must be configured")
@@ -183,7 +195,21 @@ class RealtimeEpisodeClient:
                 response = event.get("response", {})
                 status = response.get("status")
                 if status not in {None, "completed"}:
-                    raise RuntimeError(f"Realtime response ended with status={status}")
+                    partial_transcript = (
+                        final_transcript or "".join(transcript_parts).strip()
+                    )
+                    if not partial_transcript:
+                        partial_transcript = _extract_transcript_from_done(response)
+                    status_details = response.get("status_details")
+                    usage = response.get("usage")
+                    raise RuntimeError(
+                        "Realtime response ended with "
+                        f"status={status}; "
+                        f"status_details={json.dumps(status_details, ensure_ascii=False)}; "
+                        f"max_output_tokens={response.get('max_output_tokens')}; "
+                        f"usage={json.dumps(usage, ensure_ascii=False)}; "
+                        f"partial_transcript={partial_transcript!r}"
+                    )
                 text = final_transcript or "".join(transcript_parts).strip()
                 if not text:
                     text = _extract_transcript_from_done(response)
@@ -216,7 +242,7 @@ def run_realtime_trajectory(
     model: str,
     voice: str,
     reasoning_effort: str,
-    max_output_tokens: int,
+    max_output_tokens: int | str,
 ) -> RealtimeTrajectoryResult:
     results: list[RealtimeTurn] = []
     instructions = build_realtime_instructions(candidate_prompt, trajectory)
