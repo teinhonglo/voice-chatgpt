@@ -10,7 +10,7 @@
   "tts_voice": "marin",
   "realtime_voice": "marin",
   "reasoning_effort": "low",
-  "max_output_tokens": 900,
+  "max_output_tokens": "inf",
   "max_metric_calls": 60,
   "judge_repeats_final": 3,
   "weights": {
