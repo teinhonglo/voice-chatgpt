@@ -131,6 +131,215 @@ def run_condition(
     }
 
 
+
+def _delta_text(value: float) -> str:
+    return f"{value:+.2f}"
+
+
+def _improvement_label(value: float) -> str:
+    if value > 0:
+        return "提升"
+    if value < 0:
+        return "下降"
+    return "持平"
+
+
+def _markdown_quote(text: str) -> str:
+    value = str(text).strip()
+    if not value:
+        return "> [空]"
+    return "\n".join(f"> {line}" if line else ">" for line in value.splitlines())
+
+
+def _feedback_text(turn: dict[str, Any]) -> str:
+    items = [
+        str(item).strip()
+        for item in turn.get("feedback", [])
+        if str(item).strip()
+    ]
+    if not items:
+        return "[無]"
+    return " / ".join(dict.fromkeys(items))
+
+
+def write_markdown_report(
+    *,
+    report: dict[str, Any],
+    trajectories: list[TutorTrajectory],
+    output_path: str | Path,
+) -> None:
+    direct = report["direct_transfer"]
+    adapted = report["adapted"]
+    direct_aggregate = direct["aggregate"]
+    adapted_aggregate = adapted["aggregate"]
+
+    metrics = (
+        ("Overall score", "score"),
+        ("Process adherence", "process_adherence"),
+        ("Pedagogical quality", "pedagogical_quality"),
+        ("Naturalness & encouragement", "naturalness_encouragement"),
+    )
+
+    lines: list[str] = [
+        f"# Prompt Adaptation {report['split'].title()} Report",
+        "",
+        "Before = GPT-Realtime-2 + initial prompt.  ",
+        "After = GPT-Realtime-2 + optimized prompt.",
+        "",
+        "## 1. Performance Summary",
+        "",
+        "| Metric | Before | After | Delta |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+
+    for label, key in metrics:
+        before = float(direct_aggregate[key])
+        after = float(adapted_aggregate[key])
+        lines.append(
+            f"| {label} | {before:.2f} | {after:.2f} | "
+            f"{_delta_text(after - before)} |"
+        )
+
+    overall_delta = (
+        float(adapted_aggregate["score"]) - float(direct_aggregate["score"])
+    )
+    process_delta = (
+        float(adapted_aggregate["process_adherence"])
+        - float(direct_aggregate["process_adherence"])
+    )
+    lines.extend(
+        [
+            "",
+            (
+                f"**整體 Performance：{_improvement_label(overall_delta)} "
+                f"{_delta_text(overall_delta)} 分。**  "
+            ),
+            (
+                f"**Process Adherence：{_improvement_label(process_delta)} "
+                f"{_delta_text(process_delta)} 分。**"
+            ),
+            "",
+            "## 2. Trajectory Summary",
+            "",
+            "| Trajectory | Book | DACC | Before | After | Delta |",
+            "| --- | --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+
+    direct_by_id = {
+        item["trajectory_id"]: item for item in direct["trajectories"]
+    }
+    adapted_by_id = {
+        item["trajectory_id"]: item for item in adapted["trajectories"]
+    }
+
+    for trajectory in trajectories:
+        before_row = direct_by_id[trajectory.trajectory_id]
+        after_row = adapted_by_id[trajectory.trajectory_id]
+        delta = float(after_row["score"]) - float(before_row["score"])
+        book = trajectory.book.replace("|", r"\|")
+        lines.append(
+            f"| {trajectory.trajectory_id} | {book} | {trajectory.dacc} | "
+            f"{float(before_row['score']):.2f} | "
+            f"{float(after_row['score']):.2f} | {_delta_text(delta)} |"
+        )
+
+    lines.extend(["", "## 3. Turn-by-Turn Qualitative Comparison", ""])
+
+    for trajectory in trajectories:
+        before_row = direct_by_id[trajectory.trajectory_id]
+        after_row = adapted_by_id[trajectory.trajectory_id]
+        before_responses = before_row["realtime_responses"]
+        after_responses = after_row["realtime_responses"]
+        before_turns = before_row["turns"]
+        after_turns = after_row["turns"]
+
+        lines.extend(
+            [
+                (
+                    f"### {trajectory.trajectory_id} — "
+                    f"{trajectory.book} (DACC {trajectory.dacc})"
+                ),
+                "",
+            ]
+        )
+
+        for position in range(len(before_responses)):
+            if position == 0:
+                turn_label = "Opening"
+                learner_text = "[START_LESSON]"
+                expected_state = trajectory.opening.expected_teacher_state
+                pipeline_reference = trajectory.opening.source_tutor_response
+            else:
+                source_turn = trajectory.turns[position - 1]
+                turn_label = f"Turn {source_turn.turn_index}"
+                learner_text = source_turn.student_text
+                expected_state = source_turn.expected_teacher_state
+                pipeline_reference = source_turn.source_tutor_response
+
+            before_turn = before_turns[position]
+            after_turn = after_turns[position]
+
+            lines.extend(
+                [
+                    f"#### {turn_label}",
+                    "",
+                    "**Learner**",
+                    "",
+                    _markdown_quote(learner_text),
+                    "",
+                    "**Expected teacher state**",
+                    "",
+                    _markdown_quote(expected_state),
+                    "",
+                    "**Pipeline reference**",
+                    "",
+                    _markdown_quote(pipeline_reference),
+                    "",
+                    "**Before — Initial prompt**",
+                    "",
+                    _markdown_quote(before_responses[position]),
+                    "",
+                    "**After — Optimized prompt**",
+                    "",
+                    _markdown_quote(after_responses[position]),
+                    "",
+                    "| Metric | Before | After | Delta |",
+                    "| --- | ---: | ---: | ---: |",
+                ]
+            )
+
+            for metric_label, key in metrics:
+                before_score = float(before_turn[key])
+                after_score = float(after_turn[key])
+                lines.append(
+                    f"| {metric_label} | {before_score:.2f} | "
+                    f"{after_score:.2f} | "
+                    f"{_delta_text(after_score - before_score)} |"
+                )
+
+            lines.extend(
+                [
+                    "",
+                    (
+                        "**Before judge feedback:** "
+                        f"{_feedback_text(before_turn)}"
+                    ),
+                    "",
+                    (
+                        "**After judge feedback:** "
+                        f"{_feedback_text(after_turn)}"
+                    ),
+                    "",
+                ]
+            )
+
+    Path(output_path).write_text(
+        "\n".join(lines).rstrip() + "\n",
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     args = parse_args()
     if not os.getenv("OPENAI_API_KEY", "").strip():
@@ -184,12 +393,19 @@ def main() -> None:
     }
 
     output_path = Path(config["output_dir"]) / f"{args.split}_evaluation.json"
+    markdown_path = Path(config["output_dir"]) / f"{args.split}_report.md"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(f"Evaluation report: {output_path}")
+    write_markdown_report(
+        report=report,
+        trajectories=trajectories,
+        output_path=markdown_path,
+    )
+    print(f"Evaluation JSON: {output_path}")
+    print(f"Readable report: {markdown_path}")
     print(f"Transfer gain: {report['transfer_gain']:+.2f}")
     print(
         "Process-adherence gain: "
