@@ -59,6 +59,36 @@ prompt_adaptation/
 
 `source_tutoring_policy.txt` is the **portable initial prompt used by this experiment**. It removes Pipeline-only JSON wrappers and the separate final-report behavior so the optimization focuses on tutoring policy rather than output formatting.
 
+
+## Recommended entry point
+
+Run the whole experiment from the repository root with the stage-controlled wrapper:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+bash run_prompt_adaptation.sh
+```
+
+The wrapper sources `path.sh`, uses `parse_options.sh`, and supports:
+
+```bash
+bash run_prompt_adaptation.sh --stage 1 --stop-stage 1
+bash run_prompt_adaptation.sh --stage 2 --stop-stage 2
+bash run_prompt_adaptation.sh --stage 3 --stop-stage 3
+```
+
+Stages are:
+
+- `-1`: install dependencies
+- `0`: prepare/verify trajectories and initial prompt
+- `1`: generate fixed learner audio
+- `2`: run GEPA prompt adaptation
+- `3`: run held-out test evaluation
+
+By default, stage 0 looks for `prompt_adaptation/private_data/SR_prompt_adaptation_trajectories.jsonl` and copies it to the path configured by `data_path`.
+
+Per-stage terminal logs are saved under `prompt_adaptation/outputs/logs/`. GEPA intermediate state remains under `prompt_adaptation/outputs/gepa/`.
+
 ## 1. Checkout
 
 ```bash
