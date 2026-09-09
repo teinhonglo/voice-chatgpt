@@ -1,0 +1,4 @@
+-r requirements.dual_mode.txt
+gepa>=0.1.4,<1
+litellm>=1.75,<2
+websocket-client>=1.8,<2
