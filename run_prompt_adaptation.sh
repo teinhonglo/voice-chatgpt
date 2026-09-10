@@ -22,8 +22,8 @@ Stages:
   -1  Install prompt-adaptation dependencies
    0  Prepare/verify trajectories and initial prompt
    1  Generate fixed learner audio
-   2  Run GEPA prompt adaptation
-   3  Run held-out test evaluation
+   2  Run GEPA reference-distillation prompt adaptation
+   3  Run held-out teacher-vs-Realtime evaluation
 "
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -141,12 +141,12 @@ if (( stage <= 1 && stop_stage >= 1 )); then
 fi
 
 if (( stage <= 2 && stop_stage >= 2 )); then
-  echo "===== Stage 2: GEPA prompt adaptation ====="
+  echo "===== Stage 2: GEPA reference-distillation prompt adaptation ====="
   python -m prompt_adaptation.run     --config "$exp_config"     2>&1 | tee "$log_dir/stage2_prompt_adaptation.log"
 fi
 
 if (( stage <= 3 && stop_stage >= 3 )); then
-  echo "===== Stage 3: held-out test evaluation ====="
+  echo "===== Stage 3: held-out teacher-vs-Realtime evaluation ====="
   python -m prompt_adaptation.evaluate     --config "$exp_config"     2>&1 | tee "$log_dir/stage3_test_evaluation.log"
 fi
 
@@ -157,4 +157,4 @@ echo "Optimization report: $output_dir/optimization_report.json"
 echo "Test JSON:           $output_dir/test_evaluation.json"
 echo "Readable report:     $output_dir/test_report.md"
 echo "Logs:                $log_dir/"
-echo "GEPA intermediates:  $output_dir/gepa/"
+echo "GEPA intermediates:  $output_dir/gepa_reference_distillation/"
