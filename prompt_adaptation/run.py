@@ -73,21 +73,41 @@ def _run_and_judge(
         judge_model=config["judge_model"],
         trajectory=trajectory,
         target=realtime,
-        weights=config["weights"],
+        alignment_weights=config["alignment_weights"],
         repeats=repeats,
+        include_opening_in_reward=bool(config["include_opening_in_reward"]),
     )
     responses = [turn.assistant_text for turn in realtime.turns]
     return score, details, responses
 
 
-def _dimension_means(details: list[dict[str, Any]]) -> dict[str, float]:
+def _dimension_means(
+    details: list[dict[str, Any]],
+    *,
+    include_opening: bool,
+) -> dict[str, float]:
+    scored = [
+        item for item in details
+        if include_opening or not item["is_opening"]
+    ]
+    if not scored:
+        raise ValueError("No scored turns")
     return {
-        "process_adherence": mean(item["process_adherence"] for item in details),
-        "pedagogical_quality": mean(item["pedagogical_quality"] for item in details),
-        "naturalness_encouragement": mean(
-            item["naturalness_encouragement"] for item in details
+        "reference_alignment": mean(
+            item["reference_alignment"] for item in scored
         ),
-        "score": mean(item["score"] for item in details),
+        "pedagogical_action_alignment": mean(
+            item["pedagogical_action_alignment"] for item in scored
+        ),
+        "semantic_content_alignment": mean(
+            item["semantic_content_alignment"] for item in scored
+        ),
+        "response_form_alignment": mean(
+            item["response_form_alignment"] for item in scored
+        ),
+        "process_adherence": mean(
+            item["process_adherence"] for item in scored
+        ),
     }
 
 
@@ -127,7 +147,10 @@ def evaluate_split(
         )
 
     return {
-        "aggregate": _dimension_means(all_turns),
+        "aggregate": _dimension_means(
+            all_turns,
+            include_opening=bool(config["include_opening_in_reward"]),
+        ),
         "trajectories": items,
     }
 
@@ -158,7 +181,7 @@ def main() -> None:
         prompt = _candidate_text(candidate)
         trajectory = trajectory_by_id[str(example["trajectory_id"])]
         try:
-            score, details, _ = _run_and_judge(
+            score, details, responses = _run_and_judge(
                 prompt=prompt,
                 trajectory=trajectory,
                 config=config,
@@ -172,50 +195,85 @@ def main() -> None:
                 "Feedback": "The candidate could not complete the Realtime trajectory.",
             }
 
-        metrics = _dimension_means(details)
+        metrics = _dimension_means(
+            details,
+            include_opening=bool(config["include_opening_in_reward"]),
+        )
         feedback_lines = []
-        for item in details:
+        for item, target_response in zip(details, responses):
+            if item["is_opening"]:
+                teacher_response = trajectory.opening.source_tutor_response
+            else:
+                teacher_response = trajectory.turns[
+                    item["turn_index"] - 1
+                ].source_tutor_response
             turn_feedback = " | ".join(item.get("feedback", []))
-            if turn_feedback:
-                feedback_lines.append(
-                    f"Turn {item['turn_index']}: score={item['score']:.1f}; "
-                    f"{turn_feedback}"
+            prompt_advice = " | ".join(item.get("prompt_advice", []))
+            feedback_lines.append(
+                "\n".join(
+                    [
+                        (
+                            f"Turn {item['turn_index']}: "
+                            f"reference_alignment="
+                            f"{item['reference_alignment']:.1f}"
+                        ),
+                        f"TEXT TEACHER: {teacher_response}",
+                        f"REALTIME: {target_response}",
+                        f"MISMATCH: {turn_feedback}",
+                        f"PROMPT ADVICE: {prompt_advice}",
+                    ]
                 )
+            )
 
         side_info = {
             "scores": {
-                "process_adherence": metrics["process_adherence"] / 100.0,
-                "pedagogical_quality": metrics["pedagogical_quality"] / 100.0,
-                "naturalness_encouragement": metrics[
-                    "naturalness_encouragement"
-                ]
-                / 100.0,
+                "reference_alignment": (
+                    metrics["reference_alignment"] / 100.0
+                ),
+                "pedagogical_action_alignment": (
+                    metrics["pedagogical_action_alignment"] / 100.0
+                ),
+                "semantic_content_alignment": (
+                    metrics["semantic_content_alignment"] / 100.0
+                ),
+                "response_form_alignment": (
+                    metrics["response_form_alignment"] / 100.0
+                ),
+                "process_adherence": (
+                    metrics["process_adherence"] / 100.0
+                ),
             },
             "Trajectory": (
-                f"DACC={trajectory.dacc}, {len(trajectory.turns)} learner turns"
+                f"DACC={trajectory.dacc}, "
+                f"{len(trajectory.turns)} learner turns"
             ),
-            "Feedback": "\n".join(feedback_lines),
+            "Feedback": "\n\n".join(feedback_lines),
         }
         return score / 100.0, side_info
 
-    objective = """Adapt the supplied reading-tutor system prompt for GPT-Realtime-2.
+    objective = """Perform black-box sequence distillation from a validated Text LLM
+reading tutor to GPT-Realtime-2 by optimizing only the Realtime system prompt.
 
-The target model receives continuous multi-turn learner AUDIO in one persistent Realtime
-session. Preserve the validated Pipeline tutor policy, especially the required reading
-sequence, mastery-based transitions, same-objective remediation after incorrect or
-incomplete answers, book-grounded corrections, DACC-appropriate difficulty, natural
-encouragement, and correct lesson completion.
+For every trajectory, the stored historical Pipeline tutor response is the FIXED teacher
+target. The primary scalar reward is reference_alignment. Improve the Realtime response so
+it matches the teacher's pedagogical action, semantic content, next-question intent,
+amount of scaffolding, and response form. Natural paraphrasing is allowed; lexical copying
+is not required.
 
-The optimized artifact must remain a GENERAL system prompt. Never copy or encode book
-titles, character names, story facts, learner utterances, expected answers, trajectory IDs,
-or wording from individual Pipeline responses. Book-specific context is supplied separately
-at runtime. Do not add JSON output requirements or final-report behavior. Prefer clear,
-Realtime-friendly labeled sections and explicit trigger -> action -> exception rules where
-they improve adherence."""
+Treat each mismatch as a contrastive teacher-vs-student error. Read the supplied TEXT
+TEACHER, REALTIME, MISMATCH, and PROMPT ADVICE fields and infer a GENERAL prompt rule that
+would make future Realtime outputs closer to the teacher. Do not optimize for an
+independently plausible tutoring style when it differs from the teacher.
+
+The Realtime model runs on its own accumulated multi-turn history, so prompt changes must
+also prevent context drift across later turns. Never copy book titles, character names,
+story facts, learner utterances, expected answers, trajectory IDs, or teacher wording into
+the system prompt. Do not add JSON output or final-report behavior."""
+
 
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    gepa_dir = output_dir / "gepa"
+    gepa_dir = output_dir / "gepa_reference_distillation"
 
     print("Running GEPA prompt optimization...")
     result = optimize_anything(
@@ -256,20 +314,27 @@ they improve adherence."""
     report = {
         "target_model": config["target_model"],
         "judge_model": config["judge_model"],
+        "alignment_weights": config["alignment_weights"],
+        "include_opening_in_reward": config["include_opening_in_reward"],
         "reflection_model": config["reflection_model"],
         "source_prompt": config["source_prompt"],
         "train_ids": [item.trajectory_id for item in train],
         "dev_ids": [item.trajectory_id for item in dev],
         "direct_transfer_dev": direct_dev,
         "adapted_dev": adapted_dev,
-        "dev_transfer_gain": (
-            adapted_dev["aggregate"]["score"]
-            - direct_dev["aggregate"]["score"]
+        "dev_reference_alignment_gain": (
+            adapted_dev["aggregate"]["reference_alignment"]
+            - direct_dev["aggregate"]["reference_alignment"]
         ),
         "gepa": {
             "best_idx": result.best_idx,
             "best_validation_score": result.val_aggregate_scores[result.best_idx],
             "total_metric_calls": result.total_metric_calls,
+            "candidate_validation_scores": result.val_aggregate_scores,
+            "best_so_far_validation_scores": [
+                max(result.val_aggregate_scores[: index + 1])
+                for index in range(len(result.val_aggregate_scores))
+            ],
         },
     }
     report_path = output_dir / "optimization_report.json"
@@ -280,7 +345,10 @@ they improve adherence."""
 
     print(f"Final prompt: {prompt_path}")
     print(f"Optimization report: {report_path}")
-    print(f"Dev transfer gain: {report['dev_transfer_gain']:+.2f}")
+    print(
+        "Dev reference-alignment gain: "
+        f"{report['dev_reference_alignment_gain']:+.2f}"
+    )
 
 
 if __name__ == "__main__":

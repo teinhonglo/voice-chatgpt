@@ -23,21 +23,24 @@ def load_config(path: str | Path) -> dict[str, Any]:
         "max_output_tokens",
         "max_metric_calls",
         "judge_repeats_final",
-        "weights",
+        "include_opening_in_reward",
+        "alignment_weights",
     }
     missing = sorted(required - set(config))
     if missing:
         raise ValueError(f"Missing config keys: {', '.join(missing)}")
 
-    weights = config["weights"]
+    weights = config["alignment_weights"]
     expected_weights = {
-        "process_adherence",
-        "pedagogical_quality",
-        "naturalness_encouragement",
+        "pedagogical_action_alignment",
+        "semantic_content_alignment",
+        "response_form_alignment",
     }
     if set(weights) != expected_weights:
-        raise ValueError(f"weights must contain exactly {sorted(expected_weights)}")
+        raise ValueError(
+            f"alignment_weights must contain exactly {sorted(expected_weights)}"
+        )
     total = sum(float(weights[key]) for key in expected_weights)
     if abs(total - 1.0) > 1e-6:
-        raise ValueError(f"weights must sum to 1.0, got {total}")
+        raise ValueError(f"alignment_weights must sum to 1.0, got {total}")
     return config

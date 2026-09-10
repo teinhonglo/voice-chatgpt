@@ -12,11 +12,11 @@ The experiment is intentionally narrow:
 - no latency metric
 - no separate final-report model
 
-The curated Pipeline trajectories are treated as behavioral supervision. The Pipeline itself does **not** need to be rerun.
+The curated Pipeline trajectories are treated as fixed Text-LLM teacher sequences. The Pipeline itself does **not** need to be rerun.
 
 ## Experimental conditions
 
-1. **Pipeline reference**: stored high-quality Pipeline trajectories.
+1. **Fixed Text Teacher**: the stored high-quality Pipeline response at every turn.
 2. **Direct transfer**: GPT-Realtime-2 + initial/source tutor prompt.
 3. **Auto-adapted**: GPT-Realtime-2 + GEPA-optimized tutor prompt.
 
@@ -24,13 +24,14 @@ The primary question is whether automatic prompt adaptation improves Realtime ad
 
 ## Metrics
 
-Each Realtime tutor turn is judged on a 0-100 scale:
+Each Realtime tutor turn is compared directly with the fixed Text Teacher response:
 
-- **Process Adherence** (0.50)
-- **Pedagogical Quality** (0.30)
-- **Naturalness & Encouragement** (0.20)
+- **Pedagogical Action Alignment** (0.45): same accept/remediate/advance/complete decision and next objective.
+- **Semantic Content Alignment** (0.40): same key facts, hints, corrections, and question intent.
+- **Response-Form Alignment** (0.15): similar amount of guidance, number of questions, directness, and spoken style.
+- **Process Adherence** is retained as a diagnostic metric but is not mixed into the GEPA reward.
 
-Process Adherence is intentionally weighted most heavily.
+The primary GEPA scalar reward is **Reference Alignment**, the weighted sum of the three teacher-alignment dimensions above. By default, the opening is reported but excluded from the optimization reward.
 
 The final report also contains a per-turn curve so you can inspect whether performance degrades as the conversation gets longer.
 
@@ -82,12 +83,12 @@ Stages are:
 - `-1`: install dependencies
 - `0`: prepare/verify trajectories and initial prompt
 - `1`: generate fixed learner audio
-- `2`: run GEPA prompt adaptation
-- `3`: run held-out test evaluation
+- `2`: run GEPA reference-distillation prompt adaptation
+- `3`: run held-out teacher-vs-Realtime evaluation
 
 By default, stage 0 looks for `prompt_adaptation/private_data/SR_prompt_adaptation_trajectories.jsonl` and copies it to the path configured by `data_path`.
 
-Per-stage terminal logs are saved under `prompt_adaptation/outputs/logs/`. GEPA intermediate state remains under `prompt_adaptation/outputs/gepa/`.
+Per-stage terminal logs are saved under `prompt_adaptation/outputs/logs/`. GEPA reference-distillation state is stored under `prompt_adaptation/outputs/gepa_reference_distillation/`, so old fitness caches from previous reward definitions are not reused.
 
 ## 1. Checkout
 
@@ -239,11 +240,12 @@ python -m prompt_adaptation.run   --config prompt_adaptation/config.json
 
 The runner:
 
-1. evaluates GPT-Realtime-2 + the initial prompt on dev
+1. evaluates GPT-Realtime-2 + the initial prompt against the fixed Text Teacher trajectories on dev
 2. uses the 5 train trajectories for GEPA optimization
-3. uses the 2 dev trajectories for GEPA validation
-4. writes the best Full-Duplex prompt
-5. evaluates that prompt again on dev
+3. gives GEPA contrastive per-turn feedback containing the teacher response, Realtime response, mismatch diagnosis, and a generalizable prompt recommendation
+4. uses the 2 dev trajectories for GEPA validation on Reference Alignment
+5. writes the best Full-Duplex prompt
+6. evaluates that prompt again on dev
 
 The student inputs are sent as audio. Each trajectory uses one persistent Realtime WebSocket session, so earlier tutor outputs remain in later context.
 
@@ -253,7 +255,7 @@ Outputs:
 prompt_adaptation/outputs/
 ├── system_prompt.full_duplex.txt
 ├── optimization_report.json
-└── gepa/
+└── gepa_reference_distillation/
 ```
 
 The main artifact is:
@@ -315,10 +317,11 @@ Important fields:
   "reflection_model": "openai/gpt-5.6-luna",
   "max_metric_calls": 60,
   "judge_repeats_final": 3,
-  "weights": {
-    "process_adherence": 0.5,
-    "pedagogical_quality": 0.3,
-    "naturalness_encouragement": 0.2
+  "include_opening_in_reward": false,
+  "alignment_weights": {
+    "pedagogical_action_alignment": 0.45,
+    "semantic_content_alignment": 0.40,
+    "response_form_alignment": 0.15
   }
 }
 ```
@@ -329,6 +332,6 @@ For a first smoke test, reduce `max_metric_calls` before running the full experi
 
 - Real child transcripts are intentionally excluded from git.
 - The final-report model is excluded from prompt reconstruction and evaluation.
-- Source Pipeline wording is a reference, not a lexical target.
+- The stored source Pipeline response is the fixed sequence-level teacher target. Semantic and behavioral equivalence is rewarded; exact lexical copying is not required.
 - GEPA is explicitly instructed not to copy book titles, story facts, learner utterances, expected answers, or source-response wording into the optimized prompt.
 - The current experiment evaluates the semantic/pedagogical behavior of continuous audio dialogue. It does not evaluate interruption timing or latency.

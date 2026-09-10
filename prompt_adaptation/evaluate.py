@@ -18,8 +18,8 @@ from prompt_adaptation.settings import load_config
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate direct-transfer and optimized GPT-Realtime-2 prompts on a "
-            "held-out trajectory split."
+            "Evaluate direct-transfer and optimized GPT-Realtime-2 prompts "
+            "against fixed historical Text LLM teacher trajectories."
         )
     )
     parser.add_argument("--config", default="prompt_adaptation/config.json")
@@ -40,6 +40,39 @@ def read_prompt(path: str | Path) -> str:
     if not prompt:
         raise ValueError(f"Empty prompt: {path}")
     return prompt
+
+
+def _scored_turns(
+    turns: list[dict[str, Any]],
+    *,
+    include_opening: bool,
+) -> list[dict[str, Any]]:
+    scored = [
+        item for item in turns
+        if include_opening or not item["is_opening"]
+    ]
+    if not scored:
+        raise ValueError("No scored turns")
+    return scored
+
+
+def _aggregate(
+    turns: list[dict[str, Any]],
+    *,
+    include_opening: bool,
+) -> dict[str, float]:
+    scored = _scored_turns(turns, include_opening=include_opening)
+    keys = (
+        "reference_alignment",
+        "pedagogical_action_alignment",
+        "semantic_content_alignment",
+        "response_form_alignment",
+        "process_adherence",
+    )
+    return {
+        key: mean(float(item[key]) for item in scored)
+        for key in keys
+    }
 
 
 def run_condition(
@@ -68,8 +101,11 @@ def run_condition(
             judge_model=config["judge_model"],
             trajectory=trajectory,
             target=target,
-            weights=config["weights"],
+            alignment_weights=config["alignment_weights"],
             repeats=repeats,
+            include_opening_in_reward=bool(
+                config["include_opening_in_reward"]
+            ),
         )
         all_turns.extend(turns)
         trajectory_rows.append(
@@ -77,27 +113,17 @@ def run_condition(
                 "trajectory_id": trajectory.trajectory_id,
                 "book": trajectory.book,
                 "dacc": trajectory.dacc,
-                "score": score,
+                "reference_alignment": score,
                 "turns": turns,
                 "realtime_responses": [
                     item.assistant_text for item in target.turns
                 ],
             }
         )
-        print(f"{trajectory.trajectory_id}: {score:.2f}")
-
-    aggregate = {
-        "score": mean(item["score"] for item in all_turns),
-        "process_adherence": mean(
-            item["process_adherence"] for item in all_turns
-        ),
-        "pedagogical_quality": mean(
-            item["pedagogical_quality"] for item in all_turns
-        ),
-        "naturalness_encouragement": mean(
-            item["naturalness_encouragement"] for item in all_turns
-        ),
-    }
+        print(
+            f"{trajectory.trajectory_id}: "
+            f"reference_alignment={score:.2f}"
+        )
 
     by_turn: dict[str, dict[str, list[float]]] = {}
     for item in all_turns:
@@ -107,10 +133,11 @@ def run_condition(
         bucket = by_turn.setdefault(
             key,
             {
-                "score": [],
+                "reference_alignment": [],
+                "pedagogical_action_alignment": [],
+                "semantic_content_alignment": [],
+                "response_form_alignment": [],
                 "process_adherence": [],
-                "pedagogical_quality": [],
-                "naturalness_encouragement": [],
             },
         )
         for metric in bucket:
@@ -121,15 +148,20 @@ def run_condition(
             metric: mean(values)
             for metric, values in metrics.items()
         }
-        for key, metrics in sorted(by_turn.items(), key=lambda pair: int(pair[0]))
+        for key, metrics in sorted(
+            by_turn.items(),
+            key=lambda pair: int(pair[0]),
+        )
     }
 
     return {
-        "aggregate": aggregate,
+        "aggregate": _aggregate(
+            all_turns,
+            include_opening=bool(config["include_opening_in_reward"]),
+        ),
         "learner_turn_curve": turn_curve,
         "trajectories": trajectory_rows,
     }
-
 
 
 def _delta_text(value: float) -> str:
@@ -148,18 +180,30 @@ def _markdown_quote(text: str) -> str:
     value = str(text).strip()
     if not value:
         return "> [空]"
-    return "\n".join(f"> {line}" if line else ">" for line in value.splitlines())
+    return "\n".join(
+        f"> {line}" if line else ">"
+        for line in value.splitlines()
+    )
 
 
-def _feedback_text(turn: dict[str, Any]) -> str:
-    items = [
+def _unique_text(items: list[Any]) -> str:
+    values = [
         str(item).strip()
-        for item in turn.get("feedback", [])
+        for item in items
         if str(item).strip()
     ]
-    if not items:
+    if not values:
         return "[無]"
-    return " / ".join(dict.fromkeys(items))
+    return " / ".join(dict.fromkeys(values))
+
+
+def _trajectory_lookup(
+    condition: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    return {
+        item["trajectory_id"]: item
+        for item in condition["trajectories"]
+    }
 
 
 def write_markdown_report(
@@ -170,21 +214,32 @@ def write_markdown_report(
 ) -> None:
     direct = report["direct_transfer"]
     adapted = report["adapted"]
-    direct_aggregate = direct["aggregate"]
-    adapted_aggregate = adapted["aggregate"]
+    before_agg = direct["aggregate"]
+    after_agg = adapted["aggregate"]
 
     metrics = (
-        ("Overall score", "score"),
-        ("Process adherence", "process_adherence"),
-        ("Pedagogical quality", "pedagogical_quality"),
-        ("Naturalness & encouragement", "naturalness_encouragement"),
+        ("Reference alignment (primary)", "reference_alignment"),
+        (
+            "Pedagogical action alignment",
+            "pedagogical_action_alignment",
+        ),
+        ("Semantic content alignment", "semantic_content_alignment"),
+        ("Response-form alignment", "response_form_alignment"),
+        ("Process adherence (diagnostic)", "process_adherence"),
     )
 
     lines: list[str] = [
-        f"# Prompt Adaptation {report['split'].title()} Report",
+        f"# Prompt Distillation {report['split'].title()} Report",
         "",
+        "Teacher = fixed historical Text LLM / Pipeline response.  ",
         "Before = GPT-Realtime-2 + initial prompt.  ",
         "After = GPT-Realtime-2 + optimized prompt.",
+        "",
+        (
+            "Primary optimization target: **Reference Alignment**. "
+            "Process Adherence is diagnostic and is not mixed into the "
+            "GEPA scalar reward."
+        ),
         "",
         "## 1. Performance Summary",
         "",
@@ -193,30 +248,24 @@ def write_markdown_report(
     ]
 
     for label, key in metrics:
-        before = float(direct_aggregate[key])
-        after = float(adapted_aggregate[key])
+        before = float(before_agg[key])
+        after = float(after_agg[key])
         lines.append(
             f"| {label} | {before:.2f} | {after:.2f} | "
             f"{_delta_text(after - before)} |"
         )
 
-    overall_delta = (
-        float(adapted_aggregate["score"]) - float(direct_aggregate["score"])
-    )
-    process_delta = (
-        float(adapted_aggregate["process_adherence"])
-        - float(direct_aggregate["process_adherence"])
+    primary_delta = (
+        float(after_agg["reference_alignment"])
+        - float(before_agg["reference_alignment"])
     )
     lines.extend(
         [
             "",
             (
-                f"**整體 Performance：{_improvement_label(overall_delta)} "
-                f"{_delta_text(overall_delta)} 分。**  "
-            ),
-            (
-                f"**Process Adherence：{_improvement_label(process_delta)} "
-                f"{_delta_text(process_delta)} 分。**"
+                f"**Reference Alignment："
+                f"{_improvement_label(primary_delta)} "
+                f"{_delta_text(primary_delta)} 分。**"
             ),
             "",
             "## 2. Trajectory Summary",
@@ -226,25 +275,24 @@ def write_markdown_report(
         ]
     )
 
-    direct_by_id = {
-        item["trajectory_id"]: item for item in direct["trajectories"]
-    }
-    adapted_by_id = {
-        item["trajectory_id"]: item for item in adapted["trajectories"]
-    }
+    direct_by_id = _trajectory_lookup(direct)
+    adapted_by_id = _trajectory_lookup(adapted)
 
     for trajectory in trajectories:
         before_row = direct_by_id[trajectory.trajectory_id]
         after_row = adapted_by_id[trajectory.trajectory_id]
-        delta = float(after_row["score"]) - float(before_row["score"])
+        before = float(before_row["reference_alignment"])
+        after = float(after_row["reference_alignment"])
         book = trajectory.book.replace("|", r"\|")
         lines.append(
-            f"| {trajectory.trajectory_id} | {book} | {trajectory.dacc} | "
-            f"{float(before_row['score']):.2f} | "
-            f"{float(after_row['score']):.2f} | {_delta_text(delta)} |"
+            f"| {trajectory.trajectory_id} | {book} | "
+            f"{trajectory.dacc} | {before:.2f} | {after:.2f} | "
+            f"{_delta_text(after - before)} |"
         )
 
-    lines.extend(["", "## 3. Turn-by-Turn Qualitative Comparison", ""])
+    lines.extend(
+        ["", "## 3. Turn-by-Turn Teacher–Realtime Comparison", ""]
+    )
 
     for trajectory in trajectories:
         before_row = direct_by_id[trajectory.trajectory_id]
@@ -268,14 +316,18 @@ def write_markdown_report(
             if position == 0:
                 turn_label = "Opening"
                 learner_text = "[START_LESSON]"
-                expected_state = trajectory.opening.expected_teacher_state
-                pipeline_reference = trajectory.opening.source_tutor_response
+                expected_state = (
+                    trajectory.opening.expected_teacher_state
+                )
+                teacher_response = (
+                    trajectory.opening.source_tutor_response
+                )
             else:
                 source_turn = trajectory.turns[position - 1]
                 turn_label = f"Turn {source_turn.turn_index}"
                 learner_text = source_turn.student_text
                 expected_state = source_turn.expected_teacher_state
-                pipeline_reference = source_turn.source_tutor_response
+                teacher_response = source_turn.source_tutor_response
 
             before_turn = before_turns[position]
             after_turn = after_turns[position]
@@ -292,15 +344,15 @@ def write_markdown_report(
                     "",
                     _markdown_quote(expected_state),
                     "",
-                    "**Pipeline reference**",
+                    "**Fixed Text Teacher target**",
                     "",
-                    _markdown_quote(pipeline_reference),
+                    _markdown_quote(teacher_response),
                     "",
-                    "**Before — Initial prompt**",
+                    "**Before — Realtime + initial prompt**",
                     "",
                     _markdown_quote(before_responses[position]),
                     "",
-                    "**After — Optimized prompt**",
+                    "**After — Realtime + optimized prompt**",
                     "",
                     _markdown_quote(after_responses[position]),
                     "",
@@ -322,13 +374,23 @@ def write_markdown_report(
                 [
                     "",
                     (
-                        "**Before judge feedback:** "
-                        f"{_feedback_text(before_turn)}"
+                        "**Before mismatch:** "
+                        f"{_unique_text(before_turn.get('feedback', []))}"
                     ),
                     "",
                     (
-                        "**After judge feedback:** "
-                        f"{_feedback_text(after_turn)}"
+                        "**After mismatch:** "
+                        f"{_unique_text(after_turn.get('feedback', []))}"
+                    ),
+                    "",
+                    (
+                        "**Before prompt advice:** "
+                        f"{_unique_text(before_turn.get('prompt_advice', []))}"
+                    ),
+                    "",
+                    (
+                        "**After prompt advice:** "
+                        f"{_unique_text(after_turn.get('prompt_advice', []))}"
                     ),
                     "",
                 ]
@@ -346,7 +408,10 @@ def main() -> None:
         raise SystemExit("OPENAI_API_KEY must be configured")
 
     config = load_config(args.config)
-    trajectories = load_trajectories(config["data_path"], split=args.split)
+    trajectories = load_trajectories(
+        config["data_path"],
+        split=args.split,
+    )
     source_prompt = read_prompt(config["source_prompt"])
     candidate_path = Path(
         args.candidate_prompt
@@ -381,10 +446,27 @@ def main() -> None:
         "judge_repeats": repeats,
         "source_prompt": config["source_prompt"],
         "candidate_prompt": str(candidate_path),
+        "alignment_weights": config["alignment_weights"],
+        "include_opening_in_reward": config[
+            "include_opening_in_reward"
+        ],
         "direct_transfer": direct,
         "adapted": adapted,
-        "transfer_gain": (
-            adapted["aggregate"]["score"] - direct["aggregate"]["score"]
+        "reference_alignment_gain": (
+            adapted["aggregate"]["reference_alignment"]
+            - direct["aggregate"]["reference_alignment"]
+        ),
+        "pedagogical_action_alignment_gain": (
+            adapted["aggregate"]["pedagogical_action_alignment"]
+            - direct["aggregate"]["pedagogical_action_alignment"]
+        ),
+        "semantic_content_alignment_gain": (
+            adapted["aggregate"]["semantic_content_alignment"]
+            - direct["aggregate"]["semantic_content_alignment"]
+        ),
+        "response_form_alignment_gain": (
+            adapted["aggregate"]["response_form_alignment"]
+            - direct["aggregate"]["response_form_alignment"]
         ),
         "process_adherence_gain": (
             adapted["aggregate"]["process_adherence"]
@@ -392,8 +474,14 @@ def main() -> None:
         ),
     }
 
-    output_path = Path(config["output_dir"]) / f"{args.split}_evaluation.json"
-    markdown_path = Path(config["output_dir"]) / f"{args.split}_report.md"
+    output_path = (
+        Path(config["output_dir"])
+        / f"{args.split}_evaluation.json"
+    )
+    markdown_path = (
+        Path(config["output_dir"])
+        / f"{args.split}_report.md"
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
@@ -404,12 +492,20 @@ def main() -> None:
         trajectories=trajectories,
         output_path=markdown_path,
     )
+
     print(f"Evaluation JSON: {output_path}")
     print(f"Readable report: {markdown_path}")
-    print(f"Transfer gain: {report['transfer_gain']:+.2f}")
     print(
-        "Process-adherence gain: "
-        f"{report['process_adherence_gain']:+.2f}"
+        "Reference-alignment gain: "
+        f"{report['reference_alignment_gain']:+.2f}"
+    )
+    print(
+        "Action-alignment gain: "
+        f"{report['pedagogical_action_alignment_gain']:+.2f}"
+    )
+    print(
+        "Semantic-content gain: "
+        f"{report['semantic_content_alignment_gain']:+.2f}"
     )
 
 

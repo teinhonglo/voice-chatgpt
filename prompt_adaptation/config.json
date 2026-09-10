@@ -13,9 +13,10 @@
   "max_output_tokens": "inf",
   "max_metric_calls": 60,
   "judge_repeats_final": 3,
-  "weights": {
-    "process_adherence": 0.5,
-    "pedagogical_quality": 0.3,
-    "naturalness_encouragement": 0.2
+  "include_opening_in_reward": false,
+  "alignment_weights": {
+    "pedagogical_action_alignment": 0.45,
+    "semantic_content_alignment": 0.4,
+    "response_form_alignment": 0.15
   }
 }
