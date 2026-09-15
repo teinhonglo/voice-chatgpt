@@ -28,6 +28,12 @@ LOCAL_RECOMMENDED_MODELS: tuple[dict[str, str], ...] = (
         "note": "熱門通用對話模型",
     },
     {
+        "id": "gemma4:12b",
+        "label": "Gemma 4 12B",
+        "size": "7.6 GB",
+        "note": "推薦 RTX 3090，原生 System Prompt、多語與推理",
+    },
+    {
         "id": "gemma3:12b",
         "label": "Gemma 3 12B",
         "size": "8.1 GB",
