@@ -22,6 +22,12 @@ LOCAL_RECOMMENDED_MODELS: tuple[dict[str, str], ...] = (
         "note": "較強的多語與指令遵循",
     },
     {
+        "id": "gpt-oss:20b",
+        "label": "GPT-OSS 20B",
+        "size": "14 GB",
+        "note": "OpenAI open-weight，RTX 3090 可執行，推理與 agentic tasks",
+    },
+    {
         "id": "llama3.1:8b",
         "label": "Llama 3.1 8B",
         "size": "4.9 GB",
